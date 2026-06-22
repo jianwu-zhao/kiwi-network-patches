@@ -59,27 +59,7 @@ jobs:
           done
 
       - name: Verify BUILD.gn syntax
-        run: |
-          python3 -c "
-import os, re
-src = os.environ['CHROMIUM_SRC']
-content = open(os.path.join(src, 'net/kiwi/BUILD.gn')).read()
-checks = {
-  'source_set declaration': 'source_set(\"kiwi_net_extensions\"' in content,
-  'sources list': 'sources' in content,
-  'deps list': 'deps' in content,
-  'public header': 'public' in content,
-  'configs': 'configs' in content,
-}
-for name, passed in checks.items():
-  print(f\"  {'OK' if passed else 'FAIL'} {name}\")
-sources = re.findall(r'\"([^\"]+\.cc)\"', content)
-headers = re.findall(r'\"([^\"]+\.h)\"', content)
-print(f\"  SRC refs: {len(sources)}\")
-print(f\"  HDR refs: {len(headers)}\")
-print()
-print('BUILD.gn verification passed')
-"
+        run: python3 ${{ github.workspace }}/patches/.github/scripts/verify_build_gn.py
 
       - name: Summary
         run: |
