@@ -45,50 +45,48 @@ jobs:
 
       - name: Verify patch files integrity
         run: |
-          echo "=== 检查补丁文件完整性 ==="
+          echo "=== Checking patch file integrity ==="
           echo "CC files: $(ls $PATCH_DIR/ech_kyber_integration/*.cc 2>/dev/null | wc -l)"
           echo "H files: $(ls $PATCH_DIR/ech_kyber_integration/*.h 2>/dev/null | wc -l)"
           echo "BUILD.gn: $(ls $PATCH_DIR/ech_kyber_integration/BUILD.gn 2>/dev/null)"
           echo "Unit tests: $(ls $PATCH_DIR/ech_kyber_integration/unittests/*.cc 2>/dev/null | wc -l)"
-
           echo ""
-          echo "=== 检查 Kiwi 源码目标文件 ==="
+          echo "=== Checking Kiwi source target files ==="
           for f in net/base/features.cc net/socket/ssl_client_socket.cc \
                    net/dns/host_resolver_manager.cc net/url_request/url_request_http_job.cc \
                    chrome/browser/net/system_network_context_manager.cc; do
-            if [ -f "$CHROMIUM_SRC/$f" ]; then echo "  ✅ $f"; else echo "  ⚠️  $f (将被补丁修改)"; fi
+            if [ -f "$CHROMIUM_SRC/$f" ]; then echo "  OK $f"; else echo "  MISS $f (will be patched)"; fi
           done
 
       - name: Verify BUILD.gn syntax
         run: |
-          python3 << 'PYEOF'
+          python3 -c "
 import os, re
 src = os.environ['CHROMIUM_SRC']
 content = open(os.path.join(src, 'net/kiwi/BUILD.gn')).read()
 checks = {
-  'source_set declaration': 'source_set("kiwi_net_extensions"' in content,
+  'source_set declaration': 'source_set(\"kiwi_net_extensions\"' in content,
   'sources list': 'sources' in content,
   'deps list': 'deps' in content,
   'public header': 'public' in content,
   'configs': 'configs' in content,
 }
 for name, passed in checks.items():
-  print(f"  {'✅' if passed else '❌'} {name}")
-sources = re.findall(r'"([^"]+\.cc)"', content)
-headers = re.findall(r'"([^"]+\.h)"', content)
-print(f"  📄 源文件引用: {len(sources)} 个")
-print(f"  📄 头文件引用: {len(headers)} 个")
+  print(f\"  {'OK' if passed else 'FAIL'} {name}\")
+sources = re.findall(r'\"([^\"]+\.cc)\"', content)
+headers = re.findall(r'\"([^\"]+\.h)\"', content)
+print(f\"  SRC refs: {len(sources)}\")
+print(f\"  HDR refs: {len(headers)}\")
 print()
-print('✅ BUILD.gn 验证通过')
-PYEOF
+print('BUILD.gn verification passed')
+"
 
       - name: Summary
         run: |
-          echo "=== 验证摘要 ==="
-          echo "✅ 补丁文件: $(ls ${{ env.PATCH_DIR }}/ech_kyber_integration/*.cc 2>/dev/null | wc -l) .cc, $(ls ${{ env.PATCH_DIR }}/ech_kyber_integration/*.h 2>/dev/null | wc -l) .h"
-          echo "✅ 单元测试: $(ls ${{ env.PATCH_DIR }}/ech_kyber_integration/unittests/*.cc 2>/dev/null | wc -l)"
-          echo "✅ BUILD.gn: 结构完整"
-          echo "✅ 所有文件已复制到 net/kiwi/"
+          echo "=== Summary ==="
+          echo "Patch files: $(ls ${{ env.PATCH_DIR }}/ech_kyber_integration/*.cc 2>/dev/null | wc -l) .cc"
+          echo "             $(ls ${{ env.PATCH_DIR }}/ech_kyber_integration/*.h 2>/dev/null | wc -l) .h"
+          echo "Unit tests:  $(ls ${{ env.PATCH_DIR }}/ech_kyber_integration/unittests/*.cc 2>/dev/null | wc -l)"
+          echo "BUILD.gn:    structure validated"
           echo ""
-          echo "实际编译需要完整 Chromium 源码树（40GB+）"
-          echo "推荐做法：在本地或专用 CI runner 上编译"
+          echo "Full compilation requires complete Chromium source (40GB+)"
