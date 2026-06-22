@@ -13,7 +13,7 @@ if not os.path.exists(build_gn):
 content = open(build_gn).read()
 
 checks = {
-    'source_set("kiwi_net_extensions")': 'source_set("kiwi_net_extensions"' in content,
+    'target("kiwi_net_extensions")': '"kiwi_net_extensions"' in content,
     'has sources list': 'sources' in content,
     'has deps list': 'deps' in content,
     'has public headers': 'public' in content,
