@@ -13,7 +13,8 @@ jobs:
   verify_patches:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout patches
+        uses: actions/checkout@v4
         with:
           path: patches
 
@@ -59,26 +60,27 @@ jobs:
           done
 
       - name: Verify BUILD.gn syntax
-        shell: python3
         run: |
-          import os, re
-          src = os.environ['CHROMIUM_SRC']
-          content = open(os.path.join(src, 'net/kiwi/BUILD.gn')).read()
-          checks = {
-            'source_set declaration': 'source_set("kiwi_net_extensions"' in content,
-            'sources list': 'sources' in content,
-            'deps list': 'deps' in content,
-            'public header': 'public' in content,
-            'configs': 'configs' in content,
-          }
-          for name, passed in checks.items():
-            print(f"  {'✅' if passed else '❌'} {name}")
-          sources = re.findall(r'"([^"]+\.cc)"', content)
-          headers = re.findall(r'"([^"]+\.h)"', content)
-          print(f"  📄 源文件引用: {len(sources)} 个")
-          print(f"  📄 头文件引用: {len(headers)} 个")
-          print()
-          print('✅ BUILD.gn 验证通过')
+          python3 << 'PYEOF'
+import os, re
+src = os.environ['CHROMIUM_SRC']
+content = open(os.path.join(src, 'net/kiwi/BUILD.gn')).read()
+checks = {
+  'source_set declaration': 'source_set("kiwi_net_extensions"' in content,
+  'sources list': 'sources' in content,
+  'deps list': 'deps' in content,
+  'public header': 'public' in content,
+  'configs': 'configs' in content,
+}
+for name, passed in checks.items():
+  print(f"  {'✅' if passed else '❌'} {name}")
+sources = re.findall(r'"([^"]+\.cc)"', content)
+headers = re.findall(r'"([^"]+\.h)"', content)
+print(f"  📄 源文件引用: {len(sources)} 个")
+print(f"  📄 头文件引用: {len(headers)} 个")
+print()
+print('✅ BUILD.gn 验证通过')
+PYEOF
 
       - name: Summary
         run: |
