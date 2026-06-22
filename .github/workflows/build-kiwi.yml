@@ -22,13 +22,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            python3 python3-pip curl git ninja-build lsb-release
+            python3 python3-pip curl git ninja-build lsb-release \
+            gn
 
-      - name: Install depot_tools
+      - name: Validate gn
         run: |
-          git clone --depth=1 https://chromium.googlesource.com/chromium/tools/depot_tools.git \
-            $DEPOT_TOOLS_DIR
-          echo "$DEPOT_TOOLS_DIR" >> $GITHUB_PATH
+          which gn && gn --version
+          which ninja && ninja --version
 
       - name: Clone Kiwi source (shallow)
         run: |
@@ -50,16 +50,8 @@ jobs:
           echo "=== Files in net/kiwi/ ==="
           ls -la net/kiwi/
 
-      - name: Init depot_tools
-        run: |
-          export PATH="$DEPOT_TOOLS_DIR:$PATH"
-          cd $CHROMIUM_SRC
-          update_depot_tools
-          echo "✅ depot_tools initialized"
-
       - name: GN gen + check (no compilation)
         run: |
-          export PATH="$DEPOT_TOOLS_DIR:$PATH"
           cd $CHROMIUM_SRC
           gn gen out/android --args='
             target_os="android"
