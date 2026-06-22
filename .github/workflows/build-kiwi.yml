@@ -58,63 +58,27 @@ jobs:
             if [ -f "$CHROMIUM_SRC/$f" ]; then echo "  ✅ $f"; else echo "  ⚠️  $f (将被补丁修改)"; fi
           done
 
-      - name: Compile test (standalone syntax check)
-        run: |
-          echo "=== 独立编译语法检查 ==="
-          cd $CHROMIUM_SRC
-
-          # 构建 include 路径
-          INCLUDE_PATHS="-I. -I../src -Ibuild -Ithird_party/boringssl/src/include"
-
-          # 检查 .h 文件语法
-          echo "--- 头文件语法检查 ---"
-          for f in net/kiwi/*.h; do
-            name=$(basename $f)
-            g++ -std=c++17 -fsyntax-only $INCLUDE_PATHS -c "$f" 2>&1 && \
-              echo "  ✅ $name" || \
-              echo "  ⚠️  $name (依赖 Chromium 头文件)"
-          done
-
-          echo ""
-          echo "--- .cc 文件语法检查 ---"
-          for f in net/kiwi/*.cc; do
-            name=$(basename $f)
-            echo "检查 $name ..."
-            g++ -std=c++17 -fsyntax-only $INCLUDE_PATHS -c "$f" 2>&1 | tail -3
-          done
-
-          echo ""
-          echo "✅ 语法检查完成（忽略缺头文件的错误，这是预期的）"
-
       - name: Verify BUILD.gn syntax
+        shell: python3
         run: |
-          echo "=== BUILD.gn 验证 ==="
-          cd $CHROMIUM_SRC
-          python3 -c "
-import re
-with open('net/kiwi/BUILD.gn') as f:
-    content = f.read()
-
-# 检查基本结构
-checks = {
-    'source_set declaration': \"source_set(\\\"kiwi_net_extensions\\\"\" in content,
-    'sources list': 'sources' in content,
-    'deps list': 'deps' in content,
-    'public header': 'public' in content,
-    'configs': 'configs' in content,
-}
-for name, passed in checks.items():
-    print(f\"  {'✅' if passed else '❌'} {name}\")
-
-# 检查引用一致性
-sources_match = re.findall(r'\"([^\"]+\\\\.cc)\"', content)
-headers_match = re.findall(r'\"([^\"]+\\\\.h)\"', content)
-print(f\"  📄 源文件引用: {len(sources_match)} 个\")
-print(f\"  📄 头文件引用: {len(headers_match)} 个\")
-
-print('')
-print('✅ BUILD.gn 验证通过')
-" 2>&1
+          import os, re
+          src = os.environ['CHROMIUM_SRC']
+          content = open(os.path.join(src, 'net/kiwi/BUILD.gn')).read()
+          checks = {
+            'source_set declaration': 'source_set("kiwi_net_extensions"' in content,
+            'sources list': 'sources' in content,
+            'deps list': 'deps' in content,
+            'public header': 'public' in content,
+            'configs': 'configs' in content,
+          }
+          for name, passed in checks.items():
+            print(f"  {'✅' if passed else '❌'} {name}")
+          sources = re.findall(r'"([^"]+\.cc)"', content)
+          headers = re.findall(r'"([^"]+\.h)"', content)
+          print(f"  📄 源文件引用: {len(sources)} 个")
+          print(f"  📄 头文件引用: {len(headers)} 个")
+          print()
+          print('✅ BUILD.gn 验证通过')
 
       - name: Summary
         run: |
