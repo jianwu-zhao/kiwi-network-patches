@@ -1,0 +1,188 @@
+# Build Kiwi Browser with network protocol patches
+# =================================================
+# 工作流说明:
+#   Job 1 (verify_patches): 验证补丁能否编译 (免费 runner 可跑)
+#   Job 2 (build_apk):      编译完整 APK (需付费大 runner)
+
+name: Build Kiwi Browser APK (arm64)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ kiwi ]
+
+env:
+  DEPOT_TOOLS_DIR: ${{ github.workspace }}/depot_tools
+  CHROMIUM_SRC: ${{ github.workspace }}/src
+  PATCH_DIR: ${{ github.workspace }}/patches
+
+jobs:
+  # ============================================================
+  # Job 1 — 验证补丁可编译 (轻量)
+  # ============================================================
+  verify_patches:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: patches
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3 python3-pip curl git ninja-build lsb-release
+
+      - name: Install depot_tools
+        run: |
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git \
+            $DEPOT_TOOLS_DIR
+          echo "$DEPOT_TOOLS_DIR" >> $GITHUB_PATH
+
+      - name: Clone Kiwi source (shallow)
+        run: |
+          git clone --depth=1 -b kiwi \
+            https://github.com/kiwibrowser/src.next.git \
+            $CHROMIUM_SRC
+          cd $CHROMIUM_SRC
+          echo "HEAD: $(git log --oneline -1)"
+          echo "Size: $(du -sh $CHROMIUM_SRC | cut -f1)"
+
+      - name: Apply patches
+        run: |
+          cd $CHROMIUM_SRC
+          mkdir -p net/kiwi/
+          cp $PATCH_DIR/ech_kyber_integration/*.cc  \
+             $PATCH_DIR/ech_kyber_integration/*.h   \
+             $PATCH_DIR/ech_kyber_integration/BUILD.gn \
+             net/kiwi/
+          echo "=== Files in net/kiwi/ ==="
+          ls -la net/kiwi/
+
+      - name: GN gen + check (no compilation)
+        run: |
+          cd $CHROMIUM_SRC
+          gn gen out/android --args='
+            target_os="android"
+            target_cpu="arm64"
+            is_debug=false
+            symbol_level=0
+            enable_nacl=false
+            treat_warnings_as_errors=false
+          '
+          gn check out/android net/kiwi/*.cc
+          echo "✅ GN check passed — patches are valid"
+
+  # ============================================================
+  # Job 2 — 编译 APK (需要大 runner)
+  # ============================================================
+  build_apk:
+    needs: verify_patches
+
+    # ⚠️ 免费 runner (ubuntu-latest): 7GB RAM / 14GB SSD
+    #     Chromium 源码 ~40GB，不足。
+    # 推荐使用付费大 runner:
+    runs-on: ubuntu-24-core-128gb-ssd
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: patches
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3 python3-pip python3-venv \
+            curl wget git ninja-build lsb-release \
+            libc6-dev-i386 lib32stdc++6
+
+      - name: Install depot_tools
+        run: |
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git \
+            $DEPOT_TOOLS_DIR
+          echo "$DEPOT_TOOLS_DIR" >> $GITHUB_PATH
+
+      - name: Clone Kiwi source (shallow)
+        run: |
+          git clone --depth=1 -b kiwi \
+            https://github.com/kiwibrowser/src.next.git \
+            $CHROMIUM_SRC
+          cd $CHROMIUM_SRC
+          echo "Version: $(head -1 chrome/VERSION 2>/dev/null)"
+          echo "HEAD: $(git log --oneline -1)"
+
+      - name: Apply Kiwi network patches
+        run: |
+          cd $CHROMIUM_SRC
+
+          # 1) 复制实现文件
+          mkdir -p net/kiwi/
+          cp -r $PATCH_DIR/ech_kyber_integration/*.cc \
+                $PATCH_DIR/ech_kyber_integration/*.h \
+                $PATCH_DIR/ech_kyber_integration/BUILD.gn \
+                net/kiwi/
+          cp -r $PATCH_DIR/ech_kyber_integration/unittests/*.cc \
+                net/kiwi/unittests/
+
+          # 2) 启用 feature flags
+          sed -i 's/base::FEATURE_DISABLED_BY_DEFAULT};$/base::FEATURE_ENABLED_BY_DEFAULT};/g' \
+            net/base/features.cc
+
+          # 3) 注入 SSL 集成
+          sed -i '/#include "net\/ssl\/ssl_config"/a\#include "net\/kiwi\/kiwi_ssl_config.h"' \
+            net/socket/ssl_client_socket.cc
+          sed -i '/SSL_set_connect_state(ssl_.get())/a\
+          \/\/ Kiwi: ECH + Kyber + TLS 1.3\
+          ConfigureKiwiSSL(ssl_.get(), ssl_ctx_.get(), ssl_config_);' \
+            net/socket/ssl_client_socket.cc
+
+          # 4) 注入 URLRequest
+          sed -i '/#include "net\/url_request\/url_request_http_job"/a\#include "net\/kiwi\/kiwi_url_request.h"' \
+            net/url_request/url_request_http_job.cc
+
+          echo "✅ Patches applied"
+
+      - name: Gclient runhooks
+        run: |
+          cd $CHROMIUM_SRC
+          gclient runhooks 2>&1 | tail -10
+
+      - name: GN gen
+        run: |
+          cd $CHROMIUM_SRC
+          gn gen out/android --args='
+            target_os="android"
+            target_cpu="arm64"
+            is_debug=false
+            symbol_level=0
+            enable_nacl=false
+            treat_warnings_as_errors=false
+            enable_remoting=false
+            enable_hangout_services_extension=false
+            disable_ftp_support=true
+            exclude_unwind_tables=true
+            use_sysroot=false
+          '
+
+      - name: Build kiwi_net_extensions
+        run: |
+          cd $CHROMIUM_SRC
+          ninja -C out/android net/kiwi:kiwi_net_extensions
+          echo "✅ kiwi_net_extensions compiled"
+
+      - name: Build chrome_public_apk
+        run: |
+          cd $CHROMIUM_SRC
+          ninja -C out/android chrome_public_apk
+          echo "✅ APK generated"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: kiwi-browser-arm64
+          path: |
+            ${{ env.CHROMIUM_SRC }}/out/android/apks/*.apk
+            ${{ env.CHROMIUM_SRC }}/out/android/*.apk
+          if-no-files-found: warn
+          retention-days: 30

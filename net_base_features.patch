@@ -1,0 +1,33 @@
+--- a/net/base/features.cc
++++ b/net/base/features.cc
+@@ -118,13 +118,13 @@ const base::Feature kUseDnsHttpsSvcbAlpn{"UseDnsHttpsSvcbAlpn",
+ const base::Feature kEnableTLS13EarlyData{"EnableTLS13EarlyData",
+-                                          base::FEATURE_DISABLED_BY_DEFAULT};
++                                          base::FEATURE_ENABLED_BY_DEFAULT};
+
+ const base::Feature kEncryptedClientHello{"EncryptedClientHello",
+-                                          base::FEATURE_DISABLED_BY_DEFAULT};
++                                          base::FEATURE_ENABLED_BY_DEFAULT};
+
+ const base::Feature kTLS13KeyUpdate{"TLS13KeyUpdate",
+-                                    base::FEATURE_DISABLED_BY_DEFAULT};
++                                    base::FEATURE_ENABLED_BY_DEFAULT};
+
+ const base::Feature kPermuteTLSExtensions{"PermuteTLSExtensions",
+-                                          base::FEATURE_DISABLED_BY_DEFAULT};
++                                          base::FEATURE_ENABLED_BY_DEFAULT};
+
+ const base::Feature kPostQuantumCECPQ2{"PostQuantumCECPQ2",
+-                                       base::FEATURE_DISABLED_BY_DEFAULT};
++                                       base::FEATURE_ENABLED_BY_DEFAULT};
+
+ const base::Feature kNetUnusedIdleSocketTimeout{
+     "NetUnusedIdleSocketTimeout", base::FEATURE_DISABLED_BY_DEFAULT};
+
++// 启用 TCP 连接超时优化
++const base::Feature kTimeoutTcpConnectAttempt{
++    "TimeoutTcpConnectAttempt", base::FEATURE_ENABLED_BY_DEFAULT};
++
++// 启用网络缓冲区优化
++const base::Feature kOptimizeNetworkBuffers{"OptimizeNetworkBuffers2",
++                                            base::FEATURE_ENABLED_BY_DEFAULT};

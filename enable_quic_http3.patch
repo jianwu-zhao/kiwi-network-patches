@@ -1,0 +1,50 @@
+--- a/net/features.gni
++++ b/net/features.gni
+@@ -1,5 +1,13 @@
+ # 启用 QUIC 和 HTTP/3 支持
+ declare_args() {
++  # 强制启用 QUIC (默认由 Chromium 平台决定)
++  enable_quic = true
++
++  # 启用 HTTP/3 (基于 QUIC)
++  enable_http3 = true
++
++  # 启用 Brotli 压缩
++  disable_brotli_filter = false
++
+   # 启用 WebSocket
+   enable_websockets = !is_ios
+--- a/chrome/browser/about_flags.cc
++++ b/chrome/browser/about_flags.cc
+@@ -XXXX,6 +XXXX,30 @@ const FeatureEntry kFeatureEntries[] = {
+      flag_descriptions::kEnableTLS13EarlyDataDescription, kOsAll,
+      FEATURE_VALUE_TYPE(net::features::kEnableTLS13EarlyData)},
+ 
++    // === 最新网络协议支持 ===
++
++    {"enable-quic-proactive",
++     flag_descriptions::kQuicName,
++     flag_descriptions::kQuicDescription,
++     kOsAll,
++     FEATURE_VALUE_TYPE(net::features::kQuic)},
++
++    {"enable-encrypted-client-hello",
++     flag_descriptions::kEncryptedClientHelloName,
++     flag_descriptions::kEncryptedClientHelloDescription,
++     kOsAll,
++     FEATURE_VALUE_TYPE(net::features::kEncryptedClientHello)},
++
++    {"enable-dns-https-svcb",
++     "Enable DNS HTTPS records (SVCB)",
++     "Enables querying HTTPS DNS records for improved connection "
++     "behavior, including Encrypted ClientHello and HTTP upgrades.",
++     kOsAll,
++     FEATURE_VALUE_TYPE(net::features::kUseDnsHttpsSvcb)},
++
++    {"enable-post-quantum-kyber",
++     "Enable Post-Quantum Key Agreement (Kyber)",
++     "Enables Kyber post-quantum key agreement in TLS connections.",
++     kOsAll,
++     FEATURE_VALUE_TYPE(net::features::kPostQuantumCECPQ2)},
++
+     // -- 分割线: 以上为新增 flags ---

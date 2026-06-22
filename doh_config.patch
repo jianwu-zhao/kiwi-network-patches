@@ -1,0 +1,57 @@
+--- a/chrome/browser/net/system_network_context_manager.cc
++++ b/chrome/browser/net/system_network_context_manager.cc
+@@ -XXX,XX +XXX,XX @@
+ #include "services/network/public/cpp/cross_thread_pending_shared_url_loader_factory.h"
+ #include "services/network/public/cpp/features.h"
+ #include "services/network/public/cpp/network_switches.h"
++#include "services/network/public/mojom/network_context.mojom.h"
+ #include "services/network/public/mojom/network_context.mojom-forward.h"
+ #include "services/network/public/mojom/url_loader_factory.mojom.h"
+ #include "third_party/blink/public/common/features.h"
+@@ -XXX,XX +XXX,XX @@ void SystemNetworkContextManager::ConfigureDefaultNetworkContextParams(
+   network_context_params->http_cache_enabled = false;
+ #endif
+ 
++  // === 配置 DNS over HTTPS (DoH) ===
++  // 预置多组 DoH 服务器，用户可在设置中选择
++  network_context_params->dns_over_https_servers =
++      network::mojom::DnsOverHttpsServerList::New();
++
++  auto& doh_servers = network_context_params->dns_over_https_servers->servers;
++
++  // Cloudflare - 支持 ECH, 最快
++  doh_servers.push_back(network::mojom::DnsOverHttpsServer::New(
++      "https://cloudflare-dns.com/dns-query", true));
++
++  // Google Public DNS
++  doh_servers.push_back(network::mojom::DnsOverHttpsServer::New(
++      "https://dns.google/dns-query", true));
++
++  // Quad9 - 安全过滤
++  doh_servers.push_back(network::mojom::DnsOverHttpsServer::New(
++      "https://dns.quad9.net/dns-query", true));
++
++  // 阿里云 DNS (中国地区优化)
++  doh_servers.push_back(network::mojom::DnsOverHttpsServer::New(
++      "https://dns.alidns.com/dns-query", true));
++
++  // 开启 DoH 安全 DNS 回退
++  network_context_params->dns_over_https_attempts = 3;
++
+   // 以下为原有配置...
+ }
+--- a/net/dns/dns_config_service.cc
++++ b/net/dns/dns_config_service.cc
+@@ -XXX,XX +XXX,XX @@
+ // 启用 DNS 事务动态超时
+ DnsConfig::DnsConfig() {
+   ... 原有代码 ...
++
++  // 启用 HTTPS/SVCB 记录查询
++  this->use_dns_https_svcb = true;
++  this->use_dns_https_svcb_alpn = true;
++
++  // DNS 并行查询优化
++  this->attempts = 3;         // 重试次数
++  this->fallback_period = base::Seconds(3);  // 快速 fallback
+ }

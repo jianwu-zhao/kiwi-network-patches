@@ -1,0 +1,117 @@
+# Copyright 2024 Kiwi Browser Authors.
+# SPDX-License-Identifier: BSD-3-Clause
+#
+# Kiwi 网络协议扩展 - 完整编译配置
+
+import("//build/config/features.gni")
+import("//net/net_features.gni")
+
+assert(enable_quic, "Kiwi: QUIC must be enabled for HTTP/3 support")
+assert(enable_http3, "Kiwi: HTTP/3 must be enabled")
+
+# =====================================================================
+# Kiwi 网络协议扩展静态库
+# =====================================================================
+
+static_library("kiwi_net_extensions") {
+  sources = [
+    # 公共头文件 (4 个)
+    "kiwi_ssl_config.h",
+    "kiwi_dns_handler.h",
+    "kiwi_url_request.h",
+    "kiwi_system_net.h",
+
+    # 核心实现 (8 文件)
+    "ssl_client_socket.cc",
+    "host_resolver_manager.cc",
+    "url_request_http_job.cc",
+    "ech_retry_handler.cc",
+    "quic_ech_integration.cc",
+    "system_network_context_manager.cc",
+    "networking_features.cc",
+
+    # 指标 + IPC + 代理 + Android (4 文件)
+    "metrics_instrumentation.cc",
+    "mojo_ipc_integration.cc",
+    "proxy_tls_interception.cc",
+    "android_network_config.cc",
+  ]
+
+  deps = [
+    "//base",
+    "//base/util",
+    "//crypto",
+    "//net",
+    "//net:net_features",
+    "//net/dns",
+    "//net/http",
+    "//net/quic",
+    "//net/socket",
+    "//net/ssl",
+    "//net/third_party/quiche",
+    "//net/url_request",
+    "//third_party/boringssl",
+    "//chrome/browser",
+    "//components/prefs",
+    "//services/network/public/mojom",
+  ]
+
+  # BoringSSL 实验性 API 启用
+  defines = [
+    "OPENSSL_IS_BORINGSSL",
+    "BORINGSSL_HAVE_ECH",
+    "BORINGSSL_HAVE_KYBER",
+    "BORINGSSL_HAVE_TLS13_KEY_UPDATE",
+  ]
+
+  configs += [ "//build/config/compiler:no_stack_protector" ]
+
+  if (is_android) {
+    deps += [
+      "//base:base_java",
+      "//net/android:net_android_support",
+    ]
+  }
+}
+
+# =====================================================================
+# 单元测试
+# =====================================================================
+
+test("kiwi_net_extensions_unittests") {
+  sources = [
+    "unittests/ech_config_manager_test.cc",
+    "unittests/https_svcb_parser_test.cc",
+    "unittests/ech_retry_handler_test.cc",
+    "unittests/full_pipeline_integration_test.cc",
+  ]
+
+  deps = [
+    ":kiwi_net_extensions",
+    "//base/test:test_support",
+    "//net:test_support",
+    "//net:net_test_support",
+    "//testing/gtest",
+    "//testing/gmock",
+    "//third_party/boringssl:boringssl_test_support",
+  ]
+
+  # Android 测试环境
+  if (is_android) {
+    deps += [ "//net/android:net_android_test_support" ]
+  }
+}
+
+# =====================================================================
+# 集成点说明
+# =====================================================================
+#
+# 在 chrome/browser/BUILD.gn 或 chrome/android/BUILD.gn 中添加:
+#
+#   deps += [ "//net:kiwi_net_extensions" ]
+#
+# 在 net/BUILD.gn 的 source_set("net") 中添加:
+#
+#   public_deps += [ "//net:kiwi_net_extensions" ]
+#
+# =====================================================================

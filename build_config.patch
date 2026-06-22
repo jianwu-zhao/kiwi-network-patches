@@ -1,0 +1,108 @@
+--- a/build/config/features.gni
++++ b/build/config/features.gni
+@@ -1,4 +1,42 @@
+ # Kiwi Browser - 网络协议编译配置
+ # 此文件在 gn gen 时被包含，设置全局编译选项
++
+ declare_args() {
++  # === QUIC / HTTP/3 ===
++
++  # 启用 QUIC 协议栈 (默认 Chromium 在移动端禁用)
++  enable_quic = true
++
++  # 启用 HTTP/3 (基于 QUIC)
++  enable_http3 = true
++
++  # 启用 QUIC 连接迁移
++  # 在网络切换时保持连接不断 (WIFI <-> 蜂窝)
++  enable_quic_connection_migration = true
++
++  # 启用 QUIC 0-RTT 快速重连
++  enable_quic_0rtt = true
++
++  # === TLS / 加密 ===
++
++  # 启用 BoringSSL 的 ECH 支持
++  # 如果 BoringSSL 版本较旧，需要更新到 Chromium 105+ 的版本
++  enable_ech = true
++
++  # 启用后量子密钥交换 (Kyber)
++  # 需要 BoringSSL 支持 X25519Kyber768Draft00
++  enable_post_quantum_cecpq2 = true
++
++  # 启用 TLS 扩展排列
++  enable_tls_permute_extensions = true
++
++  # === DNS ===
++
++  # 启用 DNS over HTTPS
++  enable_dns_over_https = true
++
++  # 启用 HTTPS / SVCB DNS 记录
++  enable_dns_https_svcb = true
++
++  # === 性能 ===
++  enable_brotli = true
+ }
+--- a/out/android/args.gn
++++ b/out/android/args.gn
+@@ -0,0 +1,35 @@
++# Kiwi Browser Android 编译参数
++# 使用: gn gen out/android --args=@out/android/args.gn
++
++# 目标平台
++target_os = "android"
++target_cpu = "arm64"        # 支持 arm64-v8a
++# target_cpu = "arm"        # 支持 armeabi-v7a (旧设备)
++# target_cpu = "x86_64"     # 模拟器
++
++# 编译类型
++is_debug = false
++symbol_level = 0            # 减小 APK 体积
++is_official_build = true    # 优化 + 去除调试信息
++
++# === 网络协议 ===
++enable_quic = true
++enable_http3 = true
++enable_ech = true
++enable_post_quantum_cecpq2 = true
++enable_dns_over_https = true
++enable_dns_https_svcb = true
++enable_tls_permute_extensions = true
++enable_quic_connection_migration = true
++enable_quic_0rtt = true
++
++# === 存储与性能 ===
++enable_brotli = true
++enable_reporting = true
++enable_websockets = true
++
++# === Kiwi 特定 ===
++enable_extensions = true
++enable_plugins = false
++
++# === 优化 ===
++optimize_for_size = true        # 优化 APK 大小
++blink_symbol_level = 0          # Blink 无符号
++use_thin_lto = true             # 链接时优化
+--- a/third_party/quiche/quic_feature_flags.h
++++ b/third_party/quiche/quic_feature_flags.h
+@@ -1,4 +1,15 @@
+ // QUICHE (QUIC 实现) 特性标志
++
++// 启用 QUIC v1 和 v2 (RFC 9000, RFC 9369)
++#define QUIC_ENABLE_QUIC_VERSION_RFCV1 1
++#define QUIC_ENABLE_QUIC_VERSION_RFCV2 1
++
++// 启用 Draft-29 兼容旧服务器
++#define QUIC_ENABLE_QUIC_VERSION_DRAFT_29 1
++
++// 启用 BBRv2 拥塞控制
++#define QUIC_ENABLE_BBR_V2 1
++
++// 启用连接迁移
++#define QUIC_ENABLE_CONNECTION_MIGRATION 1
++
++// 禁用已废弃版本
++#define QUIC_ENABLE_QUIC_VERSION_50 0  // MV10 之前版本
+ 

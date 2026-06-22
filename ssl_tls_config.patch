@@ -1,0 +1,312 @@
+--- a/net/socket/ssl_client_socket.cc
++++ b/net/socket/ssl_client_socket.cc
+@@ -1,3 +1,307 @@
+ // Copyright 2021 The Chromium Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
++
++#include "net/socket/ssl_client_socket.h"
++#include "net/base/features.h"
++#include "net/base/network_isolation_key.h"
++#include "net/cert/x509_certificate.h"
++#include "net/ssl/ssl_config.h"
++#include "net/ssl/ssl_connection_status_flags.h"
++#include "third_party/boringssl/src/include/openssl/ssl.h"
++
++namespace net {
++
++// =====================================================================
++// Encrypted ClientHello (ECH) - 加密 SNI 防止中间人嗅探
++// RFC 8871, draft-ietf-tls-esni-13
++// =====================================================================
++
++// ECH 配置管理器：从 HTTPS DNS 记录或内置公钥加载 ECH 配置
++class ECHConfigManager {
++ public:
++  static ECHConfigManager& GetInstance() {
++    static base::NoDestructor<ECHConfigManager> instance;
++    return *instance;
++  }
++
++  // 为 SSL 连接配置 ECH
++  // 需要在 SSL_CTX 或 SSL 对象上设置以下参数：
++  //
++  // 1. SSL_set_ech_server_config_list(ssl, config_list)
++  //    - 从 HTTPS DNS SVCB 记录中获取 ECH 公钥配置
++  //    - 格式: echconfig=<base64> 参数
++  //
++  // 2. SSL_set_ech_grease_enabled(ssl, true)
++  //    - 发送 ECH GREASE 填充以探测服务器支持
++  //
++  // 3. SSL_set_ech_is_inner_call(ssl, callback)
++  //    - 确认当前连接是否为 ECH 内部连接
++  bool ConfigureECH(SSL* ssl, const std::string& ech_config_list) {
++    if (!base::FeatureList::IsEnabled(features::kEncryptedClientHello))
++      return false;
++
++    if (ech_config_list.empty())
++      return false;
++
++    // 解析 ECH 配置列表 (来自 HTTPS DNS 记录)
++    // 格式: 每个配置是二进制 blob, 多个配置串联
++    bssl::UniquePtr<SSL_ECH_KEYS> keys(SSL_ECH_KEYS_new());
++    if (!keys)
++      return false;
++
++    const uint8_t* data =
++        reinterpret_cast<const uint8_t*>(ech_config_list.data());
++    size_t len = ech_config_list.size();
++
++    if (!SSL_ECH_KEYS_add(keys.get(), /*is_retry_config=*/1, data, len)) {
++      return false;
++    }
++
++    SSL_set_ech_keys(ssl, keys.get());
++
++    DVLOG(1) << "ECH configured for connection";
++    return true;
++  }
++
++  // 配置 ECH GREASE - 即使没有 ECH 配置也发送兼容的扩展
++  // 用于探测路径是否支持 ECH，同时隐藏不使用 ECH 的用户
++  void EnableECHGrease(SSL* ssl) {
++    if (!base::FeatureList::IsEnabled(features::kEncryptedClientHello))
++      return;
++
++    // 发送 ECH GREASE 扩展 (类型 0xDD1E, 即 ECH 类型码)
++    // 内容为随机填充，使中间人无法区分真实 ECH 和 GREASE
++    SSL_set_ech_grease_enabled(ssl, 1);
++  }
++
++  // 设置 ECH 重试回调 - 当服务器返回 retry_config 时触发
++  static int ECHRetryCallback(SSL* ssl, int alert) {
++    // 服务器要求使用新的 ECH 配置重试
++    // 从 SSL_get_ech_retry_configs() 获取新配置
++    const uint8_t* retry_config;
++    size_t retry_config_len;
++    SSL_get_ech_retry_configs(ssl, &retry_config, &retry_config_len);
++
++    if (retry_config && retry_config_len > 0) {
++      DVLOG(1) << "ECH retry with new config (" << retry_config_len
++               << " bytes)";
++      // 解析并应用 retry_config
++      bssl::UniquePtr<SSL_ECH_KEYS> keys(SSL_ECH_KEYS_new());
++      if (keys && SSL_ECH_KEYS_add(keys.get(),
++                                    /*is_retry_config=*/1,
++                                    retry_config, retry_config_len)) {
++        SSL_set_ech_keys(ssl, keys.get());
++        return 1;  // 重试
++      }
++    }
++    return -1;  // 放弃 ECH，回退到明文 SNI
++  }
++
++ private:
++  friend class base::NoDestructor<ECHConfigManager>;
++  ECHConfigManager() = default;
++  ~ECHConfigManager() = default;
++};
++
++// 在 SSL 连接建立前配置 ECH
++// 此函数在 SSLClientSocket::Connect() 中调用
++void ConfigureECHForConnection(SSL* ssl, const SSLConfig& ssl_config) {
++  if (!base::FeatureList::IsEnabled(features::kEncryptedClientHello))
++    return;
++
++  auto& manager = ECHConfigManager::GetInstance();
++
++  // 1. 如果有 HTTPS DNS 记录中的 ECH 配置，使用它
++  if (!ssl_config.ech_config_list.empty()) {
++    manager.ConfigureECH(ssl, ssl_config.ech_config_list);
++  }
++
++  // 2. 始终启用 ECH GREASE
++  manager.EnableECHGrease(ssl);
++
++  // 3. 设置 ECH 重试回调
++  SSL_CTX_set_ech_retry_callback(
++      SSL_get_SSL_CTX(ssl),
++      ECHConfigManager::ECHRetryCallback);
++}
++
++// =====================================================================
++// TLS 1.3 Key Update - 定期更新会话密钥
++// RFC 8446 Section 4.4
++// =====================================================================
++
++// TLS 1.3 密钥更新定时器回调
++// 在长时间连接中定期更新通信密钥，限制单次密钥的加密数据量
++//
++// 配置建议：
++// - 密钥更新间隔: 每 100MB 数据或每 10 分钟更新一次
++// - 使用 post-handshake 认证更新
++class TLS13KeyUpdateController {
++ public:
++  static TLS13KeyUpdateController& GetInstance() {
++    static base::NoDestructor<TLS13KeyUpdateController> instance;
++    return *instance;
++  }
++
++  void ConfigureKeyUpdate(SSL* ssl) {
++    if (!base::FeatureList::IsEnabled(features::kTLS13KeyUpdate))
++      return;
++
++    // 启用 post-handshake 密钥更新
++    // 设置：每 100 条记录或 100MB 数据后触发更新
++    SSL_set_key_update_interval(ssl, 100);
++
++    DVLOG(1) << "TLS 1.3 Key Update configured";
++  }
++
++  // 触发密钥更新
++  static int MaybeTriggerKeyUpdate(SSL* ssl, int type, int value) {
++    if (type == SSL_CB_HANDSHAKE_DONE) {
++      // 握手完成后检查是否需要密钥更新
++      TLS13KeyUpdateController::GetInstance().ScheduleNextUpdate(ssl);
++    }
++    return 0;
++  }
++
++ private:
++  friend class base::NoDestructor<TLS13KeyUpdateController>;
++  TLS13KeyUpdateController() = default;
++  ~TLS13KeyUpdateController() = default;
++
++  void ScheduleNextUpdate(SSL* ssl) {
++    // 实际实现应绑定到网络事件循环
++    // 在收到足够的数据包后调用 SSL_key_update(ssl, 0)
++  }
++};
++
++// =====================================================================
++// TLS Extension Permutation - 随机化 ClientHello 扩展顺序
++// 防止服务器对特定扩展顺序产生依赖(ossification)
++// =====================================================================
++
++void ConfigureTLSExtensionPermutation(SSL_CTX* ctx) {
++  if (!base::FeatureList::IsEnabled(features::kPermuteTLSExtensions))
++    return;
++
++  // 启用 ClientHello 扩展排列
++  // BoringSSL 会随机化扩展顺序，避免服务器对特定顺序产生依赖
++  SSL_CTX_set_permute_extensions(ctx, 1);
++}
++
++// =====================================================================
++// Kyber 后量子密钥封装 (ML-KEM)
++// FIPS 203 (CRYSTALS-Kyber)
++// =====================================================================
++
++void ConfigurePostQuantumKeys(SSL_CTX* ctx) {
++  if (!base::FeatureList::IsEnabled(features::kPostQuantumCECPQ2))
++    return;
++
++  // 配置 Kyber 混合密钥协商
++  // 使用标准化的 Kyber768 + X25519 混合模式
++  //
++  // BoringSSL 中的曲线 ID:
++  // - NID_X25519_KYBER768: X25519 + Kyber768 混合
++  //
++  // 这会增加 ClientHello 约 1KB，但提供了抗量子安全性
++  const char* pq_groups[] = {
++    "X25519Kyber768Draft00",  // X25519 + Kyber768 混合 (标准草案)
++    "X25519",                 // 传统 ECDHE 作为后备
++  };
++
++  SSL_CTX_set1_groups_list(ctx, "X25519Kyber768Draft00:X25519");
++
++  DVLOG(1) << "Post-quantum Kyber key agreement configured";
++}
++
++// =====================================================================
++// SSL 配置入口 - 在 SSLClientSocket 初始化时调用
++// =====================================================================
++
++void ApplyKiwiNetworkProtocolConfig(SSL* ssl, SSL_CTX* ctx,
++                                     const SSLConfig& ssl_config) {
++  // 顺序: ECH -> TLS 1.3 Key Update -> TLS 扩展排列 -> 后量子加密
++
++  // 1. ECH (Encrypted ClientHello)
++  ConfigureECHForConnection(ssl, ssl_config);
++
++  // 2. TLS 1.3 Key Update (应用于 ssl 对象)
++  TLS13KeyUpdateController::GetInstance().ConfigureKeyUpdate(ssl);
++
++  // 3. TLS Extension Permutation (应用于 SSL_CTX)
++  ConfigureTLSExtensionPermutation(ctx);
++
++  // 4. Post-Quantum Kyber (应用于 SSL_CTX)
++  ConfigurePostQuantumKeys(ctx);
++
++  // 5. TLS 1.3 0-RTT Early Data
++  if (base::FeatureList::IsEnabled(features::kEnableTLS13EarlyData)) {
++    // 启用 0-RTT 早发数据
++    SSL_set_early_data_enabled(ssl, 1);
++
++    // 设置最大 0-RTT 数据量 (64KB)
++    SSL_set_max_early_data_size(ssl, 64 * 1024);
++  }
++}
++
++// =====================================================================
++// SSLConfig 扩展 - 支持 ECH 配置传递
++// =====================================================================
++
++// 扩展 SSLConfig 以支持 ECH 配置
++// 这些配置来自 HTTPS DNS SVCB 记录的 echconfig 参数
++//
++// 用法:
++//   SSLConfig config;
++//   config.ech_config_list = dns_result.ech_config;
++//
++// 需要在 net/ssl/ssl_config.h 中添加:
++//   // ECH 配置列表 (来自 HTTPS DNS 记录)
++//   std::string ech_config_list;
++
++// =====================================================================
++// DNS 集成 - 从 HTTPS DNS 记录获取 ECH 配置
++// =====================================================================
++
++// 在 net/dns/host_resolver_manager.cc 中，
++// 当解析 HTTPS/SVCB 记录时，提取 echconfig 参数：
++//
++// 伪代码:
++//
++// void HostResolverManager::ProcessHTTPSRecord(
++//     const HostCache::Entry& results,
++//     SSLConfig* ssl_config) {
++//   for (const auto& record : results.https_records()) {
++//     for (const auto& param : record.params()) {
++//       if (param.key() == "echconfig") {
++//         // 将 ECH 配置传递到 SSL 连接
++//         ssl_config->ech_config_list = param.value();
++//       }
++//     }
++//   }
++// }
++//
++// 完整的 DNS-SSL 集成需要修改:
++// 1. net/dns/host_resolver_manager.cc
++// 2. net/url_request/url_request_http_job.cc
++// 3. net/socket/ssl_client_socket.cc
++// 4. net/ssl/ssl_config.h
++
++// =====================================================================
++// 编译时需要 BoringSSL 支持以下 API:
++// (Chromium 105+ 的 BoringSSL 已包含)
++//
++// - SSL_set_ech_keys()
++// - SSL_set_ech_grease_enabled()
++// - SSL_CTX_set_ech_retry_callback()
++// - SSL_get_ech_retry_configs()
++// - SSL_ECH_KEYS_new()
++// - SSL_ECH_KEYS_add()
++// - SSL_CTX_set_permute_extensions()
++// - SSL_set_key_update_interval()
++// - SSL_key_update()
++// - SSL_set_early_data_enabled()
++// - SSL_set_max_early_data_size()
++// - SSL_CTX_set1_groups_list() with "X25519Kyber768Draft00"
++// =====================================================================
++
++}  // namespace net

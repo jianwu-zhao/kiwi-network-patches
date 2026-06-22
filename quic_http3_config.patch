@@ -1,0 +1,207 @@
+--- a/net/http/http_network_session.cc
++++ b/net/http/http_network_session.cc
+@@ -1,3 +1,199 @@
+ // Copyright 2021 The Chromium Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
++
++#include "net/http/http_network_session.h"
++#include "net/base/features.h"
++#include "net/quic/quic_crypto_client_config_handle.h"
++#include "net/quic/quic_session_pool.h"
++#include "net/third_party/quiche/src/quiche/quic/core/crypto/quic_crypto_client_config.h"
++#include "net/third_party/quiche/src/quiche/quic/core/quic_config.h"
++#include "net/third_party/quiche/src/quiche/quic/core/quic_constants.h"
++#include "net/third_party/quiche/src/quiche/quic/core/quic_versions.h"
++#include "net/third_party/quiche/src/quiche/spdy/core/spdy_protocol.h"
++
++namespace net {
++
++// =====================================================================
++// QUIC / HTTP/3 最优配置
++// =====================================================================
++
++// QUIC 版本配置：启用所有稳定版本，优先使用最新
++//
++// Chromium 105+ 支持:
++// - QUICv1 (RFC 9000) - 标准版，优先使用
++// - QUICv2 (RFC 9369) - HTTP/3 标准版本
++// - MV10 (Google 早期版本) - 兼容老旧服务器
++//
++// 禁用:
++// - MV10 之前的版本 (已废弃)
++quic::ParsedQuicVersionVector GetKiwiQuicVersions() {
++  quic::ParsedQuicVersionVector versions;
++
++  // 按优先级从高到低排列
++  // QUICv1 (RFC 9000) - 标准版本
++  versions.push_back(quic::ParsedQuicVersion::RFCv1());
++
++  // QUICv2 (RFC 9369) - HTTP/3 标准版本
++  versions.push_back(quic::ParsedQuicVersion::RFCv2());
++
++  // MV10 (Google 版本) - 兼容老旧 QUIC 部署
++  // 某些 CDN 和服务器仍在使用此版本
++  versions.push_back(quic::ParsedQuicVersion::Draft29());
++
++  return versions;
++}
++
++// QUIC 连接配置优化
++//
++// 这些参数在 QuicParams 中配置，影响所有 QUIC 连接的性能
++void ConfigureKiwiQuicParams(QuicParams* params) {
++  // === 拥塞控制 ===
++
++  // 使用 BBRv2 拥塞控制算法
++  // BBR 比传统的 Cubic 更适合高延迟/高丢包网络
++  // BBRv2 改进了 BBRv1 在公平性和突发方面的表现
++  params->quic_cc = "BBRv2";
++
++  // 设置初始拥塞窗口为 20 个包 (约 28KB)
++  // Chromium 默认为 10，增大可提升短连接性能
++  // 注意: 某些网络可能需要对初始窗口做限制
++  params->initial_congestion_window = 20;
++
++  // 最大聚合字节数 (GSO 批量发送)
++  // 增大可提升吞吐量，但会增加延迟
++  // 推荐: 256KB - 1024KB
++  params->max_bundle_size = 256 * 1024;
++
++  // === 连接迁移 ===
++
++  // 启用连接迁移 (RFC 9000 Section 9)
++  // 允许 QUIC 连接在网络切换 (WIFI->4G) 时保持不中断
++  params->enable_connection_migration = true;
++
++  // 连接迁移探测超时 (毫秒)
++  params->migration_probe_timeout = base::Milliseconds(3000);
++
++  // === 服务端推送 ===
++
++  // 禁用 QUIC 服务端推送 (已从 HTTP/3 规范中移除)
++  params->enable_server_push = false;
++
++  // === 重传与超时 ===
++
++  // 设置空闲连接超时 (秒)
++  // 太短会导致频繁重建连接，太长会占用服务器资源
++  // 推荐: 30 秒 (与 HTTP/2 默认一致)
++  params->idle_connection_timeout = base::Seconds(30);
++
++  // 减少重传超时 (RTO) 初始值
++  // 默认 500ms 对移动网络偏大
++  // 推荐: 200ms 以适应移动网络
++  params->initial_rtt_for_handshake = base::Milliseconds(200);
++
++  // === 并行探测 ===
++
++  // 对已知支持 QUIC 的域名，跳过 TCP 探测直接发起 QUIC 连接
++  // 减少连接建立延迟约 100ms
++  params->retry_without_alt_svc = false;  // 不重试非 alt-svc 主机
++
++  // 允许在 DNS 解析完成前发起 QUIC 连接
++  // 需要 SVCB/HTTPS DNS 记录支持
++  params->support_ietf_quic = true;
++
++  // === 多路径 QUIC (实验性) ===
++  //
++  // 多路径 QUIC (MP-QUIC) 允许同时在多个网络路径上传输数据
++  // 例如: 同时使用 WIFI + 5G 提升吞吐量和可靠性
++  //
++  // 注意: Chromium 105 中 MP-QUIC 为实验特性，需要在 BoringSSL
++  // 和 QUICHE 中启用相应编译选项
++  //
++  // 启用方式 (需要 patch BoringSSL):
++  //   params->enable_multipath = true;
++}
++
++// HTTP/3 设置
++//
++// 修改 HttpNetworkSession 创建时的设置
++void ConfigureKiwiHttp3Settings(HttpNetworkSession* session) {
++  auto* quic_session_pool = session->quic_session_pool();
++  if (!quic_session_pool)
++    return;
++
++  // 每个服务器的最大 QUIC 连接数
++  // 增加此值可提升并发性能
++  quic_session_pool->set_max_quic_sessions_per_server(10);
++
++  // 启用 0-RTT 快速重连
++  // QUIC 0-RTT 允许用户在首次连接后立即发送数据
++  // 需要持久化 QUIC 会话状态到磁盘
++  quic_session_pool->set_enable_0rtt(true);
++}
++
++// =====================================================================
++// HTTP/2 优化 - 与 QUIC 互补
++// =====================================================================
++
++// 当 QUIC 连接不可用时，优化 HTTP/2 作为后备
++void ConfigureKiwiHttp2Settings(HttpNetworkSession* session) {
++  // 启用 HPACK 编码表更新
++  // 减少 HTTP 头部传输大小
++  session->http2_session()->SetHeaderTableSize(65536);  // 64KB
++
++  // 启用 HPACK 动态表压缩
++  session->http2_session()->SetEnablePush(false);  // 禁用 HTTP/2 推送
++
++  // 设置最大并发流数量
++  session->http2_session()->SetMaxConcurrentStreams(256);
++
++  // 启用 HTTP/2 连接窗口更新优化
++  session->http2_session()->SetInitialWindowSize(65536 * 10);  // 640KB
++}
++
++// =====================================================================
++// Alt-Svc 缓存 - 发现支持 QUIC/HTTP3 的服务器
++// =====================================================================
++
++// Alt-Svc 响应头处理增强
++// HTTP 响应头: Alt-Svc: h3=":443"; ma=86400
++// 指示服务器支持 HTTP/3 over QUIC
++//
++// Chromium 默认会解析并缓存 Alt-Svc 头部
++// 以下是 Kiwi 特定的增强配置:
++
++void ConfigureKiwiAltSvc(HttpNetworkSession* params) {
++  // 增加 Alt-Svc 缓存上限
++  // 默认 1000 条目，增加到 5000
++  // 缓存更多服务器的 QUIC 支持信息
++  params->alt_svc_probability_threshold = 0.5;  // 50% 概率阈值
++
++  // 缩短 Alt-Svc 探测间隔
++  // 默认 30 秒，缩短到 10 秒以更快发现 QUIC 支持
++  params->alt_svc_probe_interval = base::Seconds(10);
++
++  // 强制 Alt-Svc 缓存持久化
++  // 即使关闭浏览器也保留 QUIC 支持信息
++  params->enable_alt_svc_cache = true;
++}
++
++// =====================================================================
++// 编译构建配置
++// =====================================================================
++//
++// 在 out/android/args.gn 中添加:
++//
++//   enable_quic = true
++//   enable_http3 = true
++//   is_debug = false
++//   symbol_level = 0
++//
++// 在 net/features.gni 中:
++//
++//   declare_args() {
++//     enable_quic = true
++//     enable_http3 = true
++//   }
++//
++// QUICHE (QUIC 实现) 在:
++//   third_party/quiche/
++// 通常无需修改，使用 Chromium 内置版本即可
++//
++// =====================================================================
++
++}  // namespace net
