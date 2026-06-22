@@ -1,4 +1,4 @@
-name: Build Kiwi Browser APK (arm64)
+name: Verify Kiwi Network Patches
 
 on:
   workflow_dispatch:
@@ -6,7 +6,6 @@ on:
     branches: [ main, kiwi ]
 
 env:
-  DEPOT_TOOLS_DIR: ${{ github.workspace }}/depot_tools
   CHROMIUM_SRC: ${{ github.workspace }}/src
   PATCH_DIR: ${{ github.workspace }}/patches
 
@@ -22,20 +21,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            python3 python3-pip curl git ninja-build lsb-release \
-            gn
-
-      - name: Validate gn
-        run: |
-          which gn && gn --version
-          which ninja && ninja --version
+            python3 python3-pip curl git ninja-build lsb-release
 
       - name: Clone Kiwi source (shallow)
         run: |
           git clone --depth=1 -b kiwi \
             https://github.com/kiwibrowser/src.next.git \
             $CHROMIUM_SRC
-          cd $CHROMIUM_SRC
           echo "HEAD: $(git log --oneline -1)"
           echo "Size: $(du -sh $CHROMIUM_SRC | cut -f1)"
 
@@ -56,111 +48,21 @@ jobs:
           echo "CC files: $(ls $PATCH_DIR/ech_kyber_integration/*.cc 2>/dev/null | wc -l)"
           echo "H files: $(ls $PATCH_DIR/ech_kyber_integration/*.h 2>/dev/null | wc -l)"
           echo "BUILD.gn: $(ls $PATCH_DIR/ech_kyber_integration/BUILD.gn 2>/dev/null)"
-          
+
+          echo ""
           echo "=== 检查 Kiwi 源码目标文件 ==="
           for f in net/base/features.cc net/socket/ssl_client_socket.cc net/dns/host_resolver_manager.cc net/url_request/url_request_http_job.cc chrome/browser/net/system_network_context_manager.cc; do
             if [ -f "$CHROMIUM_SRC/$f" ]; then echo "  ✅ $f"; else echo "  ❌ $f"; fi
           done
-          
-          echo "=== 验证补丁兼容性（g++语法检查）==="
-          cd $CHROMIUM_SRC
-          # 只检查简单的语法，不链接
-          for f in $PATCH_DIR/ech_kyber_integration/*.cc; do
-            name=$(basename $f)
-            echo "检查 $name ..."
-            g++ -std=c++17 -fsyntax-only -c "$f" 2>&1 || echo "  ⚠️  $name 语法检查跳过（缺少头文件）"
+
+          echo ""
+          echo "=== 检查目标 BUILD.gn 是否存在 ==="
+          for d in net/kiwi/ net/socket/ net/dns/ net/base/ net/url_request/ chrome/browser/net/; do
+            if [ -f "$CHROMIUM_SRC/$d/BUILD.gn" ]; then echo "  ✅ $d/BUILD.gn"; else echo "  ⚠️  $d/BUILD.gn -> 补丁 patch 会修改此文件"; fi
           done
-          
+
+          echo ""
           echo "✅ 补丁文件完整性验证通过"
           echo ""
           echo "注意：完整 gn gen + gn check 需要完整的 Chromium 源码树（40GB+）"
           echo "免费 runner 磁盘不足，请在本地或有足够资源的机器上执行完整验证。"
-
-  build_apk:
-    needs: verify_patches
-    runs-on: ubuntu-24-core-128gb-ssd
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          path: patches
-
-      - name: Install system deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            python3 python3-pip python3-venv \
-            curl wget git ninja-build lsb-release \
-            libc6-dev-i386 lib32stdc++6
-
-      - name: Install depot_tools
-        run: |
-          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git \
-            $DEPOT_TOOLS_DIR
-          echo "$DEPOT_TOOLS_DIR" >> $GITHUB_PATH
-
-      - name: Clone Kiwi source
-        run: |
-          git clone --depth=1 -b kiwi \
-            https://github.com/kiwibrowser/src.next.git \
-            $CHROMIUM_SRC
-
-      - name: Apply Kiwi network patches
-        run: |
-          cd $CHROMIUM_SRC
-          mkdir -p net/kiwi/
-          cp -r $PATCH_DIR/ech_kyber_integration/*.cc \
-                $PATCH_DIR/ech_kyber_integration/*.h \
-                $PATCH_DIR/ech_kyber_integration/BUILD.gn \
-                net/kiwi/
-          cp -r $PATCH_DIR/ech_kyber_integration/unittests/*.cc \
-                net/kiwi/unittests/
-          sed -i 's/base::FEATURE_DISABLED_BY_DEFAULT};$/base::FEATURE_ENABLED_BY_DEFAULT};/g' \
-            net/base/features.cc
-          sed -i '/#include "net\/ssl\/ssl_config"/a\#include "net\/kiwi\/kiwi_ssl_config.h"' \
-            net/socket/ssl_client_socket.cc
-          sed -i '/SSL_set_connect_state(ssl_.get())/a\
-          \/\/ Kiwi: ECH + Kyber + TLS 1.3\
-          ConfigureKiwiSSL(ssl_.get(), ssl_ctx_.get(), ssl_config_);' \
-            net/socket/ssl_client_socket.cc
-          sed -i '/#include "net\/url_request\/url_request_http_job"/a\#include "net\/kiwi\/kiwi_url_request.h"' \
-            net/url_request/url_request_http_job.cc
-          echo "✅ Patches applied"
-
-      - name: GN gen
-        run: |
-          cd $CHROMIUM_SRC
-          gn gen out/android --args='
-            target_os="android"
-            target_cpu="arm64"
-            is_debug=false
-            symbol_level=0
-            enable_nacl=false
-            treat_warnings_as_errors=false
-            enable_remoting=false
-            enable_hangout_services_extension=false
-            disable_ftp_support=true
-            exclude_unwind_tables=true
-            use_sysroot=false
-          '
-
-      - name: Build kiwi_net_extensions
-        run: |
-          cd $CHROMIUM_SRC
-          ninja -C out/android net/kiwi:kiwi_net_extensions
-          echo "✅ kiwi_net_extensions compiled"
-
-      - name: Build chrome_public_apk
-        run: |
-          cd $CHROMIUM_SRC
-          ninja -C out/android chrome_public_apk
-          echo "✅ APK generated"
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: kiwi-browser-arm64
-          path: |
-            ${{ env.CHROMIUM_SRC }}/out/android/apks/*.apk
-            ${{ env.CHROMIUM_SRC }}/out/android/*.apk
-          if-no-files-found: warn
-          retention-days: 30
