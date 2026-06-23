@@ -61,76 +61,25 @@ jobs:
       - name: Build APK
         timeout-minutes: 300
         run: |
-          # Use a temp file to store status
-          STATUS=/tmp/build_status.txt
-          echo "starting" > $STATUS
+          # Start container with patches volume
+          docker run -d --name kb -v "$PWD/patches:/tmp/p:ro" uazo/chromium:143.0.7499.193 tail -f /dev/null || exit 1
 
-          # 1. Start container
-          docker run -d --name kb -v "$PWD/patches:/tmp/p:ro" uazo/chromium:143.0.7499.193 tail -f /dev/null || { echo "FAIL: docker run"; exit 1; }
+          # Copy build script
+          docker cp "$PWD/patches/scripts/build_inside_docker.sh" kb:/tmp/build.sh 2>/dev/null || true
 
-          # 2. Check what's in /home/lg
-          docker exec kb ls /home/lg/ > /tmp/ls_home.txt 2>&1; cat /tmp/ls_home.txt
-          docker exec kb ls /home/lg/kiwi-src/ > /tmp/ls_kiwi.txt 2>&1; cat /tmp/ls_kiwi.txt | head -5
-          docker exec kb ls /home/lg/working_dir/ > /tmp/ls_work.txt 2>&1; cat /tmp/ls_work.txt | head -5
+          # Run everything as root inside the container
+          docker exec -u root kb bash /tmp/build.sh 2>&1 || true
 
-          # 3. Install gn and ninja as root
-          docker exec -u root kb bash -c '
-            echo "=== Installing build tools ==="
-            apt-get update -qq 2>/dev/null
-            apt-get install -y -qq ninja-build curl unzip 2>/dev/null
-            # Install gn
-            cd /tmp
-            curl -sL "https://chrome-infra-packages.appspot.com/dl/gn/gn/linux-amd64/+/latest" -o gn.zip 2>/dev/null
-            unzip -o gn.zip >/dev/null 2>&1
-            chmod +x gn 2>/dev/null
-            cp gn /usr/local/bin/ 2>/dev/null
-            echo "=== Tool versions ==="
-            which gn 2>/dev/null && gn --version 2>/dev/null || echo "gn not installed"
-            which ninja 2>/dev/null && ninja --version 2>/dev/null || echo "ninja not installed"
-          '
-
-          # 4. Apply patches
-          docker exec kb bash -c '
-            cd /home/lg/kiwi-src || { echo "kiwi-src not found"; exit 1; }
-            echo "=== Applying patches ==="
-            for pf in /tmp/p/*.patch; do
-              [ -f "$pf" ] || continue
-              patch -p1 --force < "$pf" 2>&1 | tail -2 && echo "OK $(basename $pf)" || echo "SKIP $(basename $pf)"
-            done
-            mkdir -p net/kiwi/unittests
-            cp /tmp/p/ech_kyber_integration/*.cc net/kiwi/ 2>/dev/null || true
-            cp /tmp/p/ech_kyber_integration/*.h net/kiwi/ 2>/dev/null || true
-            cp /tmp/p/ech_kyber_integration/BUILD.gn net/kiwi/ 2>/dev/null || true
-            echo "=== Patches applied ==="
-          '
-
-          # 5. gn gen
-          docker exec kb bash -c '
-            cd /home/lg/kiwi-src
-            which gn 2>/dev/null || { echo "gn not found"; exit 1; }
-            gn gen out/android --args="target_os=\"android\" target_cpu=\"arm64\" is_debug=false symbol_level=0 is_official_build=true enable_remoting=false enable_nacl=false proprietary_codecs=false ffmpeg_branding=\"Chromium\" enable_quic=true enable_http3=true enable_ech=true enable_quic_connection_migration=true enable_quic_0rtt=true"
-            echo "=== gn gen done ==="
-          '
-
-          # 6. ninja build
-          docker exec kb bash -c '
-            cd /home/lg/kiwi-src
-            which ninja 2>/dev/null || { echo "ninja not found"; exit 1; }
-            ninja -C out/android chrome_public_apk
-            echo "=== ninja done ==="
-            ls -la out/android/apks/ 2>/dev/null || echo "no apks dir"
-            find out/android -name "*.apk" 2>/dev/null | head -5
-          '
-
-          # 7. Extract APK
+          # Extract APK if generated
           echo "=== Extracting APK ==="
           mkdir -p apk-output
           docker cp kb:/home/lg/kiwi-src/out/android/apks/ apk-output/ 2>/dev/null || true
+          docker cp kb:/home/lg/working_dir/out/android/apks/ apk-output/ 2>/dev/null || true
           find apk-output/ -name "*.apk" -exec ls -lh {} \; || echo "no apk found"
+          find apk-output/ -type f || echo "no files at all in apk-output"
 
           # Cleanup
-          docker rm -f kb || true
-          echo "success" > $STATUS
+          docker rm -f kb 2>/dev/null || true
 
       - name: Upload APK
         if: always()
