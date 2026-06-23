@@ -5,6 +5,9 @@ on:
   push:
     branches: [kiwi]
 
+env:
+  KIWI_SRC: ${{ github.workspace }}/kiwi-src
+
 jobs:
   build_apk:
     runs-on: ubuntu-latest
@@ -12,6 +15,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: patches
+
+      - name: Clone Kiwi source
+        uses: actions/checkout@v4
+        with:
+          repository: kiwibrowser/src.next
+          ref: kiwi
+          path: kiwi-src
+          fetch-depth: 1
 
       - name: Free disk
         run: |
@@ -23,17 +34,10 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq ninja-build curl unzip python3-pip
 
-      - name: Clone Kiwi source
-        run: |
-          rm -rf /home/runner/kiwi-src
-          git clone --depth=1 -b kiwi https://github.com/kiwibrowser/src.next.git /home/runner/kiwi-src
-          ls /home/runner/kiwi-src/build/install-build-deps.sh
-          ls /home/runner/kiwi-src/net/BUILD.gn
-
       - name: Apply patches
+        working-directory: kiwi-src
         run: |
           set +e
-          cd /home/runner/kiwi-src
           for f in "$GITHUB_WORKSPACE/patches"/*.patch; do
             [ -f "$f" ] && patch -p1 --force < "$f" && echo "OK: $(basename $f)" || echo "SKIP: $(basename $f)"
           done
@@ -61,49 +65,46 @@ jobs:
           set -e
 
       - name: Install Chromium build deps
+        working-directory: kiwi-src
         run: |
-          cd /home/runner/kiwi-src
           sudo ./build/install-build-deps.sh --android --no-prompt
 
       - name: Get Clang toolchain
+        working-directory: kiwi-src
         run: |
-          cd /home/runner/kiwi-src
           python3 tools/clang/scripts/update.py
           ls -la third_party/llvm-build/Release+Asserts/bin/clang++
 
       - name: Install gn
         run: |
-          # Check buildtools first (official path)
-          if [ -f /home/runner/kiwi-src/buildtools/linux64/gn ]; then
-            GN=/home/runner/kiwi-src/buildtools/linux64/gn
+          if [ -f "$KIWI_SRC/buildtools/linux64/gn" ]; then
             echo "Using gn from buildtools"
-            $GN --version
-            sudo cp $GN /usr/local/bin/
+            $KIWI_SRC/buildtools/linux64/gn --version
+            sudo cp $KIWI_SRC/buildtools/linux64/gn /usr/local/bin/
             exit 0
           fi
-          # Download
           mkdir -p /tmp/gn-install
           curl -sL --max-time 60 "https://chrome-infra-packages.appspot.com/dl/gn/gn/linux-amd64/+/latest" -o /tmp/gn-install/gn.zip
           if [ -s /tmp/gn-install/gn.zip ]; then
             (cd /tmp/gn-install && unzip -o gn.zip)
             sudo cp /tmp/gn-install/gn /usr/local/bin/
           else
-            cd /home/runner/kiwi-src/tools/gn
+            cd "$KIWI_SRC/tools/gn"
             python3 bootstrap.py
             sudo cp out/gn /usr/local/bin/
           fi
           gn --version
 
       - name: GN Gen
+        working-directory: kiwi-src
         run: |
-          cd /home/runner/kiwi-src
           gn --version
           gn gen out/android --args='target_os="android" target_cpu="arm64" is_debug=false symbol_level=0 is_official_build=true enable_remoting=false enable_nacl=false proprietary_codecs=false ffmpeg_branding="Chromium" enable_quic=true enable_http3=true enable_ech=true enable_quic_connection_migration=true enable_quic_0rtt=true'
 
       - name: Ninja build
         timeout-minutes: 180
+        working-directory: kiwi-src
         run: |
-          cd /home/runner/kiwi-src
           ninja --version
           ninja -C out/android chrome_public_apk
 
@@ -111,7 +112,7 @@ jobs:
         if: always()
         run: |
           mkdir -p apk-output
-          find /home/runner/kiwi-src/out/android -name "*.apk" -exec cp {} apk-output/ \;
+          find "$KIWI_SRC/out/android" -name "*.apk" -exec cp {} apk-output/ \;
           ls -lh apk-output/ || echo "no APK files"
 
       - name: Upload APK
