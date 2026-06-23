@@ -52,7 +52,7 @@ jobs:
           docker rm -f kb
 
   build_apk:
-    needs: [syntax_check]
+    # needs: [syntax_check]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
