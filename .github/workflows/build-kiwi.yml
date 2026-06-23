@@ -11,7 +11,7 @@ env:
 
 jobs:
   # -----------------------------------------------------------
-  # Step 1: verify patch file structure
+  # Verify patch file structure
   # -----------------------------------------------------------
   verify_patches:
     runs-on: ubuntu-latest
@@ -20,13 +20,10 @@ jobs:
         with:
           path: patches
 
-      - run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends python3 curl git
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3 curl git
 
       - name: Clone Kiwi source (shallow)
-        run: |
-          git clone --depth=1 -b kiwi https://github.com/kiwibrowser/src.next.git $CHROMIUM_SRC
+        run: git clone --depth=1 -b kiwi https://github.com/kiwibrowser/src.next.git $CHROMIUM_SRC
 
       - name: Apply patches
         run: |
@@ -34,18 +31,16 @@ jobs:
           cp $PATCH_DIR/ech_kyber_integration/*.cc $CHROMIUM_SRC/net/kiwi/
           cp $PATCH_DIR/ech_kyber_integration/*.h  $CHROMIUM_SRC/net/kiwi/
           cp $PATCH_DIR/ech_kyber_integration/BUILD.gn $CHROMIUM_SRC/net/kiwi/
-          cp $PATCH_DIR/ech_kyber_integration/net_base_features.patch $CHROMIUM_SRC/net/base/ 2>/dev/null || true
-          echo "Patched files: $(ls $CHROMIUM_SRC/net/kiwi/ | wc -l)"
+          echo "Patched: $(ls $CHROMIUM_SRC/net/kiwi/ | wc -l) files"
 
       - name: Verify patch existence
         run: |
           echo "CC files: $(ls $PATCH_DIR/ech_kyber_integration/*.cc 2>/dev/null | wc -l)"
           echo "H  files: $(ls $PATCH_DIR/ech_kyber_integration/*.h 2>/dev/null | wc -l)"
-          echo "BUILD.gn: $(ls $PATCH_DIR/ech_kyber_integration/BUILD.gn 2>/dev/null)"
           python3 $PATCH_DIR/.github/scripts/verify_build_gn.py
 
   # -----------------------------------------------------------
-  # Step 2: full Android build inside uazo's Chromium Docker image
+  # Full Android build using uazo's Chromium Docker image
   # -----------------------------------------------------------
   compile_android:
     needs: [verify_patches]
@@ -56,80 +51,48 @@ jobs:
           path: patches
 
       - name: Free disk space
-        run: |
-          sudo rm -rf /opt/hostedtoolcache /usr/share/dotnet /usr/local/lib/android
+        run: sudo rm -rf /opt/hostedtoolcache /usr/share/dotnet /usr/local/lib/android
 
       - name: Pull Chromium build image
-        run: |
-          docker pull uazo/chromium:143.0.7499.193
+        run: docker pull uazo/chromium:143.0.7499.193
 
-      - name: Check build environment
+      - name: Copy patches into container and build
         run: |
-          docker run --rm uazo/chromium:143.0.7499.193 bash -c '
-            echo "=== Tools ==="
-            which gn ninja g++ clang++ 2>&1
-            gn --version 2>/dev/null
-            echo "=== Android NDK ==="
-            ls /opt/android* 2>/dev/null || echo "no /opt/android"
-            echo "ANDROID_NDK=${ANDROID_NDK:-unset}"
-            echo "ANDROID_HOME=${ANDROID_HOME:-unset}"
-            echo "=== Working dir ==="
-            ls -la
-            echo "=== .gn file ==="
-            ls .gn 2>/dev/null && echo "OK" || echo ".gn missing - this is an issue"
-          '
-
-      - name: Prepare build script
-        run: |
-          cat > /tmp/build_kiwi.sh << 'SCRIPT'
-          set -e -x
-          cd /home/lg/working_dir
-          echo "=== Kiwi files before copy ==="
-          ls -la net/kiwi/ 2>/dev/null || echo "no net/kiwi/ yet"
-          mkdir -p net/kiwi/
-          cp /tmp/patches/*.cc net/kiwi/ 2>/dev/null || echo "no .cc files"
-          cp /tmp/patches/*.h  net/kiwi/ 2>/dev/null || echo "no .h files"
-          cp /tmp/patches/BUILD.gn net/kiwi/ 2>/dev/null || echo "no BUILD.gn"
-          echo "=== Kiwi files ==="
-          ls -la net/kiwi/
-          echo "=== GN Gen ==="
-          gn gen out/Default --args='target_os="android" target_cpu="arm64" is_debug=false symbol_level=0'
-          echo "=== GN Gen done ==="
-          ls out/Default/
-          SCRIPT
-          chmod +x /tmp/build_kiwi.sh
-
-      - name: Run build inside container
-        run: |
-          docker run --name kiwi-builder \
-            -v $PWD/patches/ech_kyber_integration:/tmp/patches \
-            -v /tmp/build_kiwi.sh:/tmp/build_kiwi.sh:ro \
+          # Create container with sleep to keep it running
+          docker run -d --name kiwi-builder \
             uazo/chromium:143.0.7499.193 \
-            bash /tmp/build_kiwi.sh
+            sleep 3600
 
-      - name: Ninja build
-        run: |
-          docker start kiwi-builder 2>/dev/null || true
-          docker exec kiwi-builder bash -c 'cd /home/lg/working_dir && ninja -C out/Default net' | tail -30
+          # Copy Kiwi patches into the source tree
+          docker exec kiwi-builder mkdir -p /home/lg/working_dir/net/kiwi
+          docker cp patches/ech_kyber_integration/. kiwi-builder:/home/lg/working_dir/net/kiwi/
 
-      - name: Collect artifacts
-        if: always()
-        run: |
-          mkdir -p build-output
-          docker cp kiwi-builder:/home/lg/working_dir/out/Default/obj/net/kiwi build-output/ 2>/dev/null || true
-          docker cp kiwi-builder:/home/lg/working_dir/out/Default/obj/net/kiwi_network build-output/ 2>/dev/null || true
-          docker rm -f kiwi-builder 2>/dev/null || true
-          find build-output/ -name '*.o' -o -name '*.a' | head -10
+          # Show copied files
+          docker exec kiwi-builder ls -la /home/lg/working_dir/net/kiwi/
+
+          # GN Gen
+          docker exec kiwi-builder bash -c 'cd /home/lg/working_dir && gn gen out/Default --args="target_os=\"android\" target_cpu=\"arm64\" is_debug=false symbol_level=0"'
+
+          # Ninja build
+          docker exec kiwi-builder bash -c 'cd /home/lg/working_dir && ninja -C out/Default net'
+
+          # Clean up
+          docker rm -f kiwi-builder
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-arm64-build
-          path: build-output/
-          if-no-files-found: warn
+        if: always()
+        run: |
+          cid=$(docker ps -aq -f name=kiwi-builder)
+          if [ -n "$cid" ]; then
+            mkdir -p build-output
+            docker cp $cid:/home/lg/working_dir/out/Default/obj/net/kiwi build-output/ 2>/dev/null || true
+            docker cp $cid:/home/lg/working_dir/out/Default/obj/net/kiwi_network build-output/ 2>/dev/null || true
+            find build-output/ -name '*.o' -o -name '*.a' | head -10
+            docker rm -f $cid
+          fi
 
   # -----------------------------------------------------------
-  # Step 3: quick g++ syntax verification on ubuntu-latest
+  # Quick syntax verification with clang++
   # -----------------------------------------------------------
   verify_compilation:
     needs: [verify_patches]
@@ -159,32 +122,13 @@ jobs:
           cp patches/ech_kyber_integration/*.h chromium-src/net/kiwi/
           cp patches/ech_kyber_integration/BUILD.gn chromium-src/net/kiwi/
 
-      - name: Install libc++ (needed by clang for Chromium headers)
-        run: |
-          sudo apt-get install -y --no-install-recommends libc++-dev libc++abi-dev
+      - name: Install system C++ headers
+        run: sudo apt-get install -y --no-install-recommends g++
 
-      - name: Find libc++ headers
-        run: |
-          echo "=== clang include paths ==="
-          clang++ -std=c++20 -stdlib=libc++ -v -E -x c++ /dev/null 2>&1 | grep -E "^" | head -20
-          echo "=== Locate libc++ headers ==="
-          dpkg -L libc++-dev 2>/dev/null | grep -E "include.*c\+\+" | head -5
-          dpkg -L libc++abi-dev 2>/dev/null | grep -E "include.*c\+\+" | head -5
-          echo "=== Check /usr/include/c++/v1/ ==="
-          ls /usr/include/c++/v1/ 2>/dev/null | head -5 || echo "not found"
-
-      - name: Compile with clang++ and libc++
+      - name: Compile with g++
         run: |
           cd chromium-src
           mkdir -p out/verify
-          # Find C++ headers path
-          LIBCXX_INC="/usr/include/c++/v1"
-          if [ ! -d "$LIBCXX_INC" ]; then
-            echo "libc++ headers not found, falling back to libstdc++"
-            CXX="clang++ -std=c++20 -fPIC -O2"
-          else
-            CXX="clang++ -std=c++20 -fPIC -O2 -stdlib=libc++ -nostdinc++ -cxx-isystem $LIBCXX_INC"
-          fi
           INCS="-I. -Inet -Ibase -Ibuild -Ibuild_overrides"
           INCS="$INCS -Ithird_party/boringssl/src/include"
           INCS="$INCS -Ithird_party/zlib -Iurl -Icrypto"
@@ -197,26 +141,16 @@ jobs:
           PASS=0; FAIL=0
           for f in net/kiwi/*.cc; do
             base=$(basename $f .cc)
-            if [ "$base" = "mojo_ipc_integration" ]; then
-              echo "$base.cc ... SKIP (needs mojom headers)"
-              continue
-            fi
+            [ "$base" = "mojo_ipc_integration" ] && echo "SKIP $base.cc" && continue
             echo -n "$base.cc ... "
-            LOG="/tmp/$base.err"
-            if $CXX -c "$f" $INCS $DEFS -o out/verify/$base.o 2>$LOG; then
+            LOG=/tmp/$base.err
+            if g++ -std=c++20 -fPIC -O2 -c "$f" $INCS $DEFS \
+              -include /usr/include/features.h -D_GNU_SOURCE \
+              -o out/verify/$base.o 2>$LOG; then
               echo "OK"; PASS=$((PASS+1))
             else
-              echo "FAIL"
-              head -3 $LOG
-              FAIL=$((FAIL+1))
+              echo "FAIL"; head -4 $LOG; FAIL=$((FAIL+1))
             fi
           done
           echo "Result: $PASS passed, $FAIL failed"
-          if [ $FAIL -gt 0 ]; then
-            echo "=== First error details ==="
-            for f in net/kiwi/*.cc; do
-              base=$(basename $f .cc)
-              [ -f "/tmp/$base.err" ] && head -15 /tmp/$base.err && break
-            done
-          fi
           exit $FAIL
