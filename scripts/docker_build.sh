@@ -4,9 +4,12 @@ set -e
 
 SRC=/home/lg/working_dir/chromium/src
 
-echo "=== Install clang ==="
-apt-get update -qq && apt-get install -y -qq clang lld 2>/dev/null
+echo "=== Install clang + Python 3.10 ==="
+apt-get update -qq
+apt-get install -y -qq clang lld python3.10 2>/dev/null || true
+update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 2 2>/dev/null || true
 which clang++ && clang++ --version
+python3 --version
 
 echo "=== Download Chromium clang toolchain ==="
 cd "$SRC"
