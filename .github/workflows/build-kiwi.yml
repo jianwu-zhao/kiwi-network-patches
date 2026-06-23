@@ -27,34 +27,38 @@ jobs:
         run: |
           rm -rf /home/runner/kiwi-src
           git clone --depth=1 -b kiwi https://github.com/kiwibrowser/src.next.git /home/runner/kiwi-src
-
-      - name: Verify clone
-        run: |
-          ls /home/runner/kiwi-src/build/install-build-deps.sh && echo "FOUND install-build-deps.sh"
-          ls /home/runner/kiwi-src/net/BUILD.gn && echo "FOUND net/BUILD.gn"
-          du -sh /home/runner/kiwi-src 2>/dev/null || echo "size check failed"
+          ls /home/runner/kiwi-src/build/install-build-deps.sh
+          ls /home/runner/kiwi-src/net/BUILD.gn
 
       - name: Apply patches
         run: |
+          set +e
           cd /home/runner/kiwi-src
-          for pf in "$GITHUB_WORKSPACE/patches"/*.patch; do
-            [ -f "$pf" ] || continue
-            patch -p1 --force < "$pf" || echo "  patch $(basename $pf) had issues"
+          for f in "$GITHUB_WORKSPACE/patches"/*.patch; do
+            [ -f "$f" ] && patch -p1 --force < "$f" && echo "OK: $(basename $f)" || echo "SKIP: $(basename $f)"
           done
           mkdir -p net/kiwi/unittests
-          for f in "$GITHUB_WORKSPACE/patches/ech_kyber_integration"/*.cc "$GITHUB_WORKSPACE/patches/ech_kyber_integration"/*.h; do
-            [ -f "$f" ] && cp "$f" net/kiwi/ && echo "  copied $(basename $f)"
+          for ext in cc h; do
+            for f in "$GITHUB_WORKSPACE/patches/ech_kyber_integration"/*.$ext; do
+              [ -f "$f" ] && cp "$f" net/kiwi/ && echo "OK: $(basename $f)"
+            done
           done
-          if [ -f "$GITHUB_WORKSPACE/patches/ech_kyber_integration/BUILD.gn" ]; then
-            cp "$GITHUB_WORKSPACE/patches/ech_kyber_integration/BUILD.gn" net/kiwi/
-          fi
-          grep -q "kiwi_ssl_config" net/socket/ssl_client_socket.cc 2>/dev/null || sed -i "/#include \"net\/ssl\/ssl_config\"/a #include \"net\/kiwi\/kiwi_ssl_config.h\"" net/socket/ssl_client_socket.cc 2>/dev/null || true
-          grep -q "ConfigureKiwiSSL" net/socket/ssl_client_socket.cc 2>/dev/null || sed -i "/SSL_set_connect_state(ssl_.get())/a \/\/ Kiwi SSL\n  ConfigureKiwiSSL(ssl_.get(), ssl_ctx_.get(), ssl_config_);" net/socket/ssl_client_socket.cc 2>/dev/null || true
-          grep -q "kiwi_dns_handler" net/dns/host_resolver_manager.cc 2>/dev/null || sed -i "/#include \"net\/dns\/host_resolver_manager.h\"/a #include \"net\/kiwi\/kiwi_dns_handler.h\"" net/dns/host_resolver_manager.cc 2>/dev/null || true
-          grep -q "kiwi_url_request" net/url_request/url_request_http_job.cc 2>/dev/null || sed -i "/#include \"net\/url_request\/url_request_http_job.h\"/a #include \"net\/kiwi\/kiwi_url_request.h\"" net/url_request/url_request_http_job.cc 2>/dev/null || true
-          grep -q "kiwi_system_net" chrome/browser/net/system_network_context_manager.cc 2>/dev/null || sed -i "/#include \"chrome\/browser\/net\/system_network_context_manager.h\"/a #include \"net\/kiwi\/kiwi_system_net.h\"" chrome/browser/net/system_network_context_manager.cc 2>/dev/null || true
-          sed -i "s/base::FEATURE_DISABLED_BY_DEFAULT};$/base::FEATURE_ENABLED_BY_DEFAULT};/g" net/base/features.cc 2>/dev/null || true
-          echo "=== Patches applied ==="
+          cp "$GITHUB_WORKSPACE/patches/ech_kyber_integration/BUILD.gn" net/kiwi/ 2>/dev/null && echo "OK: BUILD.gn"
+          for tgt in \
+            "kiwi_ssl_config|net/socket/ssl_client_socket.cc|#include \"net/ssl/ssl_config\"|#include \"net/kiwi/kiwi_ssl_config.h\"" \
+            "ConfigureKiwiSSL|net/socket/ssl_client_socket.cc|SSL_set_connect_state(ssl_.get())|// Kiwi SSL\n  ConfigureKiwiSSL(ssl_.get(), ssl_ctx_.get(), ssl_config_)" \
+            "kiwi_dns_handler|net/dns/host_resolver_manager.cc|#include \"net/dns/host_resolver_manager.h\"|#include \"net/kiwi/kiwi_dns_handler.h\"" \
+            "kiwi_url_request|net/url_request/url_request_http_job.cc|#include \"net/url_request/url_request_http_job.h\"|#include \"net/kiwi/kiwi_url_request.h\"" \
+            "kiwi_system_net|chrome/browser/net/system_network_context_manager.cc|#include \"chrome/browser/net/system_network_context_manager.h\"|#include \"net/kiwi/kiwi_system_net.h\""; do
+            marker=$(echo "$tgt" | cut -d'|' -f1)
+            file=$(echo "$tgt" | cut -d'|' -f2)
+            after=$(echo "$tgt" | cut -d'|' -f3)
+            insert=$(echo "$tgt" | cut -d'|' -f4)
+            grep -q "$marker" "$file" 2>/dev/null || \
+              sed -i "/$after/a $insert" "$file" 2>/dev/null && echo "OK: sed $marker" || echo "SKIP: sed $marker"
+          done
+          sed -i "s/base::FEATURE_DISABLED_BY_DEFAULT};$/base::FEATURE_ENABLED_BY_DEFAULT};/g" net/base/features.cc 2>/dev/null && echo "OK: enable features" || echo "SKIP: enable features"
+          set -e
 
       - name: Install Chromium build deps
         run: |
@@ -69,40 +73,38 @@ jobs:
 
       - name: Install gn
         run: |
-          if which gn; then
-            echo "gn already installed: $(gn --version)"
-            exit 0
-          fi
+          # Check buildtools first (official path)
           if [ -f /home/runner/kiwi-src/buildtools/linux64/gn ]; then
-            echo "Found gn in buildtools:"
-            /home/runner/kiwi-src/buildtools/linux64/gn --version
-            sudo cp /home/runner/kiwi-src/buildtools/linux64/gn /usr/local/bin/
+            GN=/home/runner/kiwi-src/buildtools/linux64/gn
+            echo "Using gn from buildtools"
+            $GN --version
+            sudo cp $GN /usr/local/bin/
             exit 0
           fi
-          # Download from CIPD
+          # Download
           mkdir -p /tmp/gn-install
-          curl -sL --max-time 30 "https://chrome-infra-packages.appspot.com/dl/gn/gn/linux-amd64/+/latest" -o /tmp/gn-install/gn.zip
+          curl -sL --max-time 60 "https://chrome-infra-packages.appspot.com/dl/gn/gn/linux-amd64/+/latest" -o /tmp/gn-install/gn.zip
           if [ -s /tmp/gn-install/gn.zip ]; then
             (cd /tmp/gn-install && unzip -o gn.zip)
             sudo cp /tmp/gn-install/gn /usr/local/bin/
-            gn --version
-            exit 0
+          else
+            cd /home/runner/kiwi-src/tools/gn
+            python3 bootstrap.py
+            sudo cp out/gn /usr/local/bin/
           fi
-          # Build from source
-          cd /home/runner/kiwi-src/tools/gn
-          python3 bootstrap.py
-          sudo cp out/gn /usr/local/bin/
           gn --version
 
       - name: GN Gen
         run: |
           cd /home/runner/kiwi-src
+          gn --version
           gn gen out/android --args='target_os="android" target_cpu="arm64" is_debug=false symbol_level=0 is_official_build=true enable_remoting=false enable_nacl=false proprietary_codecs=false ffmpeg_branding="Chromium" enable_quic=true enable_http3=true enable_ech=true enable_quic_connection_migration=true enable_quic_0rtt=true'
 
       - name: Ninja build
         timeout-minutes: 180
         run: |
           cd /home/runner/kiwi-src
+          ninja --version
           ninja -C out/android chrome_public_apk
 
       - name: Extract APK
