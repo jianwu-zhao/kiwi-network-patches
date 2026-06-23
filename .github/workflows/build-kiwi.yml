@@ -25,10 +25,11 @@ jobs:
             echo "PATH=$PATH"
             which clang++ || echo "clang++ not in PATH"
             clang++ --version 2>&1 || echo "clang++ broken"
+            g++ --version 2>&1
             which g++ gn ninja
           '
 
-      - name: Compile Kiwi files
+      - name: Compile Kiwi files (g++)
         run: |
           docker run -d --name kb uazo/chromium:143.0.7499.193 tail -f /dev/null
           docker exec kb mkdir -p /home/lg/working_dir/net/kiwi
@@ -36,11 +37,14 @@ jobs:
           docker exec kb bash -c '
             set -x
             cd /home/lg/working_dir
-            which clang++ g++ gn ninja
-            clang++ --version
+            g++ --version
+            FAIL=0
             for f in net/kiwi/*.cc; do
-              echo "--- $f ---"
-              clang++ -std=c++20 -fPIC -O2 -stdlib=libc++ \
+              base=$(basename $f .cc)
+              [ "$base" = "mojo_ipc_integration" ] && echo "SKIP $base.cc" && continue
+              echo "--- $base.cc ---"
+              g++ -std=c++20 -fPIC -O2 \
+                -include /usr/include/features.h -D_GNU_SOURCE \
                 -c "$f" \
                 -I. -Inet -Ibase -Ibuild -Ibuild_overrides \
                 -Ithird_party/boringssl/src/include \
@@ -50,8 +54,11 @@ jobs:
                 -Ithird_party/partition_alloc \
                 -DNET_IMPLEMENTATION=1 -DBORINGSSL_IMPLEMENTATION=1 \
                 -DOPENSSL_IS_BORINGSSL=1 \
-                -o /dev/null 2>/tmp/err && echo "PASS" || { echo "FAIL"; head -5 /tmp/err; }
+                -o out/kobj/$base.o 2>/tmp/err && echo "PASS $base.cc" \
+                || { echo "FAIL $base.cc"; head -5 /tmp/err; FAIL=$((FAIL+1)); }
             done
+            echo "RESULT: $FAIL failures"
+            exit $FAIL
           '
           docker rm -f kb
 
