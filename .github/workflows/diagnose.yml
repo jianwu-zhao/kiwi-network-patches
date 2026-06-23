@@ -15,8 +15,11 @@ jobs:
         run: |
           docker pull uazo/chromium:143.0.7499.193
 
-          # Dump everything to stdout
+          # Dump everything to a file
           docker run --rm uazo/chromium:143.0.7499.193 bash -c '
+            echo "===== WHOAMI ====="
+            whoami
+            echo ""
             echo "===== PATH ====="
             echo $PATH
             echo ""
@@ -41,6 +44,9 @@ jobs:
             echo "===== Find clang++ ====="
             find / -name "clang++" -type f 2>/dev/null | head -5
             echo ""
+            echo "===== Find g++ ====="
+            find / -name "g++" -type f 2>/dev/null | head -5
+            echo ""
             echo "===== llvm dirs ====="
             ls /usr/lib/llvm*/bin/ 2>/dev/null | head -10
             ls /home/lg/chromium/src/third_party/llvm-build/Release+Asserts/bin/ 2>/dev/null | head -10
@@ -53,4 +59,15 @@ jobs:
             echo ""
             echo "===== apt list ====="
             dpkg -l 2>/dev/null | grep -iE "clang|gn|ninja|llvm" | head -20
-          '
+            echo ""
+            echo "===== env ====="
+            env | sort
+          ' > /tmp/diag_output.txt
+
+          cat /tmp/diag_output.txt
+
+      - name: Upload diagnostic output
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-output
+          path: /tmp/diag_output.txt
