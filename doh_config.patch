@@ -1,6 +1,6 @@
 --- a/chrome/browser/net/system_network_context_manager.cc
 +++ b/chrome/browser/net/system_network_context_manager.cc
-@@ -XXX,XX +XXX,XX @@
+@@ -1,5 +1,13 @@
  #include "services/network/public/cpp/cross_thread_pending_shared_url_loader_factory.h"
  #include "services/network/public/cpp/features.h"
  #include "services/network/public/cpp/network_switches.h"
@@ -8,7 +8,7 @@
  #include "services/network/public/mojom/network_context.mojom-forward.h"
  #include "services/network/public/mojom/url_loader_factory.mojom.h"
  #include "third_party/blink/public/common/features.h"
-@@ -XXX,XX +XXX,XX @@ void SystemNetworkContextManager::ConfigureDefaultNetworkContextParams(
+@@ -1,5 +1,13 @@ void SystemNetworkContextManager::ConfigureDefaultNetworkContextParams(
    network_context_params->http_cache_enabled = false;
  #endif
  
@@ -42,7 +42,7 @@
  }
 --- a/net/dns/dns_config_service.cc
 +++ b/net/dns/dns_config_service.cc
-@@ -XXX,XX +XXX,XX @@
+@@ -1,5 +1,13 @@
  // 启用 DNS 事务动态超时
  DnsConfig::DnsConfig() {
    ... 原有代码 ...
