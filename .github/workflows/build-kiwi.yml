@@ -78,7 +78,8 @@ jobs:
       - name: Install Chromium build deps
         working-directory: kiwi-src
         run: |
-          sudo ./build/install-build-deps.sh --android --no-prompt
+          chmod +x build/install-build-deps.sh
+          sudo bash build/install-build-deps.sh --android --no-prompt
 
       - name: Get Clang toolchain
         working-directory: kiwi-src
