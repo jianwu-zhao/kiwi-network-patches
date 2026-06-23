@@ -4,21 +4,19 @@ set -e
 
 SRC=/home/lg/working_dir/chromium/src
 
-echo "=== Install clang + Python 3.9+ ==="
+echo "=== Install clang ==="
 apt-get update -qq
 apt-get install -y -qq clang lld 2>/dev/null || true
 which clang++ && clang++ --version
 
-# Python 3.9+ needed for Chromium 143 build
+echo "=== Install Python 3.11 (static binary) ==="
 python3 --version
-apt-get install -y -qq software-properties-common 2>/dev/null || true
-add-apt-repository -y ppa:deadsnakes/ppa 2>/dev/null || true
-apt-get update -qq 2>/dev/null || true
-apt-get install -y -qq python3.10 2>/dev/null || apt-get install -y -qq python3.9 2>/dev/null || true
-if command -v python3.10 &>/dev/null; then
-  update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 2
-elif command -v python3.9 &>/dev/null; then
-  update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.9 2
+cd /tmp
+curl -sL "https://github.com/niess/python-build-standalone/releases/download/20241002/cpython-3.11.10+20241002-x86_64-unknown-linux-gnu-install_only.tar.gz" -o python.tar.gz 2>/dev/null || \
+  curl -sL "https://github.com/actions/python-versions/releases/download/3.11.9-9105123551/python-3.11.9-linux-20.04.tar.xz" -o python.tar.gz 2>/dev/null || true
+if [ -f python.tar.gz ] && [ -s python.tar.gz ]; then
+  tar xzf python.tar.gz -C /usr/local/ 2>/dev/null || true
+  /usr/local/bin/python3 --version 2>/dev/null && update-alternatives --install /usr/bin/python3 python3 /usr/local/bin/python3 2 || true
 fi
 python3 --version
 
@@ -33,7 +31,6 @@ for f in /tmp/p/*.patch; do
   [ -f "$f" ] || continue
   patch -p1 --force < "$f" 2>&1 && echo "OK: $(basename "$f")" || echo "SKIP: $(basename "$f")"
 done
-
 mkdir -p net/kiwi/unittests
 for ext in cc h; do
   for f in /tmp/p/ech_kyber_integration/*."$ext"; do
@@ -62,7 +59,7 @@ gn gen out/android --args='target_os="android" target_cpu="arm64" is_debug=false
 
 echo "=== ninja ==="
 $SRC/third_party/ninja/ninja --version
-$SRC/third_party/ninja/ninja -C out/android chrome_public_apk
+$SRC/third_party/ninja/ninja -C out/android chrome_public_apk 2>&1
 
 echo "=== find apk ==="
 find out/android -name "*.apk" 2>/dev/null | head -5
