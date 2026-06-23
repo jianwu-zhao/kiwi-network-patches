@@ -49,15 +49,16 @@ jobs:
 
           # Copy Kiwi patches into source tree
           docker exec kb mkdir -p /home/lg/working_dir/net/kiwi
-          docker cp patches/ech_kyber_integration/.[!.]* kb:/home/lg/working_dir/net/kiwi/ 2>/dev/null
-          docker cp patches/ech_kyber_integration/* kb:/home/lg/working_dir/net/kiwi/ 2>/dev/null
+          docker cp patches/ech_kyber_integration/. kb:/home/lg/working_dir/net/kiwi/ 2>/dev/null || true
 
           # Show copied files
-          docker exec kb ls /home/lg/working_dir/net/kiwi/
+          echo "=== Files in net/kiwi/ ==="
+          docker exec kb ls -la /home/lg/working_dir/net/kiwi/ | head -20
 
-          # Compile each .cc file with clang++ from within the source tree
+          # Compile each .cc file, capture ALL errors
+          echo "=== Compilation ==="
           docker exec kb bash -c '
-            cd /home/lg/working_dir
+            cd /home/lg/working_dir || exit 1
             INCS="-I. -Inet -Ibase -Ibuild -Ibuild_overrides"
             INCS="$INCS -Ithird_party/boringssl/src/include"
             INCS="$INCS -Ithird_party/zlib -Iurl -Icrypto"
@@ -67,24 +68,22 @@ jobs:
             DEFS="-DNET_IMPLEMENTATION=1 -DBORINGSSL_IMPLEMENTATION=1 -DOPENSSL_IS_BORINGSSL=1"
             CXX="clang++ -std=c++20 -fPIC -O2 -stdlib=libc++"
             mkdir -p out/kiwi_obj
-            PASS=0; FAIL=0
+            FAIL=0
             for f in net/kiwi/*.cc; do
               base=$(basename $f .cc)
-              [ "$base" = "mojo_ipc_integration" ] && echo "SKIP $base.cc (needs mojom)" && continue
-              echo -n "Compiling $base.cc ... "
-              if $CXX -c "$f" $INCS $DEFS -o out/kiwi_obj/$base.o 2>/tmp/err.txt; then
-                echo "OK"; PASS=$((PASS+1))
+              [ "$base" = "mojo_ipc_integration" ] && echo "SKIP: $base.cc (needs mojom)" && continue
+              echo "--- $base.cc ---"
+              $CXX -c "$f" $INCS $DEFS -o out/kiwi_obj/$base.o 2>&1 | head -20
+              if [ "${PIPESTATUS[0]}" -eq 0 ]; then
+                echo "PASS: $base.cc"
               else
-                echo "FAIL"; head -5 /tmp/err.txt; FAIL=$((FAIL+1))
+                echo "FAIL: $base.cc"
+                FAIL=$((FAIL+1))
               fi
             done
-            echo "Result: $PASS passed, $FAIL failed"
-            if [ $FAIL -eq 0 ]; then
-              ar rcs out/kiwi_obj/libkiwi_network.a out/kiwi_obj/*.o
-              echo "Static lib: $(stat --format=%s out/kiwi_obj/libkiwi_network.a) bytes"
-            fi
+            echo "=== Result: $FAIL failures ==="
             exit $FAIL
-          '
+          ' 2>&1 | head -100
 
       - name: Cleanup
         if: always()
