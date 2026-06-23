@@ -8,21 +8,22 @@ apt-get update -qq
 apt-get install -y -qq clang lld 2>/dev/null || true
 which clang++ && clang++ --version
 
-echo "=== Download Python 3.10 static ==="
-python3 --version
-cd /tmp
-curl -sL "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.10.20%2B20260623-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz" -o py.tar.gz
-echo "Downloaded $(stat -c%s py.tar.gz 2>/dev/null || echo 0) bytes"
-if [ -f py.tar.gz ] && [ -s py.tar.gz ]; then
-  tar xzf py.tar.gz -C /usr/local/
-  ls /usr/local/bin/python3
-  /usr/local/bin/python3 --version
-  update-alternatives --install /usr/bin/python3 python3 /usr/local/bin/python3 100
-  update-alternatives --set python3 /usr/local/bin/python3 2>/dev/null || true
-else
-  echo "Download failed, using system python3"
-fi
-echo "Final Python: $(python3 --version)"
+echo "=== Fix Python 3.10+ syntax in Chromium source ==="
+cd "$SRC"
+# Fix1: list[type] -> List[type]
+grep -rl 'list\[' --include='*.py' tools/ third_party/perfetto/ 2>/dev/null | while read f; do
+  sed -i 's/def __init__(self, \([^)]*\): list\[/\1: typing.List[/g' "$f" 2>/dev/null || true
+done
+# Add typing import where needed
+grep -rl 'typing\.List' --include='*.py' tools/ third_party/perfetto/ 2>/dev/null | while read f; do
+  grep -q '^import typing' "$f" 2>/dev/null || sed -i '1s/^/import typing\n/' "$f" 2>/dev/null || true
+done
+# Fix2: type | type -> typing.Union[type, type]
+grep -rl '[A-Za-z]* | [A-Za-z]*' --include='*.py' tools/ 2>/dev/null | while read f; do
+  # Only fix lines that have Python type annotations (not string literals)
+  sed -i 's/ = \([A-Za-z]*\) | \([A-Za-z]*\)/ = typing.Union[\1, \2]/g' "$f" 2>/dev/null || true
+done
+echo "Python fixes applied"
 
 echo "=== Download Chromium clang toolchain ==="
 cd "$SRC"
