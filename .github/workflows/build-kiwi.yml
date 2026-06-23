@@ -68,17 +68,17 @@ jobs:
           docker cp "$PWD/patches/scripts/build_inside_docker.sh" kb:/tmp/build.sh 2>/dev/null || true
 
           # Run everything as root inside the container
-          docker exec -u root kb bash /tmp/build.sh 2>&1 || true
+          docker exec -u root kb bash /tmp/build.sh 2>&1
 
-          # Extract APK if generated
+      - name: Extract APK
+        if: always()
+        run: |
           echo "=== Extracting APK ==="
           mkdir -p apk-output
           docker cp kb:/home/lg/kiwi-src/out/android/apks/ apk-output/ 2>/dev/null || true
           docker cp kb:/home/lg/working_dir/out/android/apks/ apk-output/ 2>/dev/null || true
           find apk-output/ -name "*.apk" -exec ls -lh {} \; || echo "no apk found"
           find apk-output/ -type f || echo "no files at all in apk-output"
-
-          # Cleanup
           docker rm -f kb 2>/dev/null || true
 
       - name: Upload APK
