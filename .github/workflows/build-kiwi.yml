@@ -63,28 +63,12 @@ jobs:
         run: |
           docker pull uazo/chromium:143.0.7499.193
 
-      - name: Inject Kiwi patches into image
-        run: |
-          # Build a derived image with Kiwi patches copied in
-          cat > Dockerfile << 'DOCKERFILE'
-          FROM uazo/chromium:143.0.7499.193
-          USER root
-          RUN mkdir -p /home/lg/working_dir/net/kiwi
-          COPY patches/ech_kyber_integration/*.cc /home/lg/working_dir/net/kiwi/
-          COPY patches/ech_kyber_integration/*.h  /home/lg/working_dir/net/kiwi/
-          COPY patches/ech_kyber_integration/BUILD.gn /home/lg/working_dir/net/kiwi/
-          RUN chown -R lg:lg /home/lg/working_dir/net/kiwi
-          USER lg
-          WORKDIR /home/lg/working_dir
-          DOCKERFILE
-          docker build -t kiwi-builder .
-
       - name: Check build environment
         run: |
-          docker run --rm kiwi-builder bash -c '
+          docker run --rm uazo/chromium:143.0.7499.193 bash -c '
             echo "=== Tools ==="
-            which gn ninja g++ clang++
-            gn --version
+            which gn ninja g++ clang++ 2>&1
+            gn --version 2>/dev/null
             echo "=== Android NDK ==="
             ls /opt/android* 2>/dev/null || echo "no /opt/android"
             echo "ANDROID_NDK=${ANDROID_NDK:-unset}"
@@ -92,26 +76,37 @@ jobs:
             echo "=== Working dir ==="
             ls -la
             echo "=== .gn file ==="
-            ls .gn 2>/dev/null && echo "OK" || echo ".gn missing"
-            echo "=== Kiwi files ==="
-            ls -la net/kiwi/
+            ls .gn 2>/dev/null && echo "OK" || echo ".gn missing - this is an issue"
           '
 
-      - name: GN Gen (Android arm64)
+      - name: Copy Kiwi patches into container & GN Gen
         run: |
-          docker run --rm kiwi-builder bash -c '
+          # Copy patches into a data volume, then run gn gen
+          docker run --rm \
+            -v $PWD/patches/ech_kyber_integration:/tmp/patches \
+            uazo/chromium:143.0.7499.193 bash -c '
             set -e
             cd /home/lg/working_dir
+            # Copy Kiwi files into source tree
+            mkdir -p net/kiwi/
+            cp /tmp/patches/*.cc net/kiwi/ 2>/dev/null || true
+            cp /tmp/patches/*.h  net/kiwi/ 2>/dev/null || true
+            cp /tmp/patches/BUILD.gn net/kiwi/ 2>/dev/null || true
+            echo "=== Kiwi files ==="
+            ls -la net/kiwi/
+            echo "=== GN Gen (Android arm64) ==="
             gn gen out/Default --args='\''target_os="android" target_cpu="arm64" is_debug=false symbol_level=0'\''
           '
 
-      - name: Ninja build (net module only)
+      - name: Ninja build (net module)
         run: |
-          docker run --rm kiwi-builder bash -c '
+          docker run --rm \
+            -v $PWD/patches/ech_kyber_integration:/tmp/patches \
+            uazo/chromium:143.0.7499.193 bash -c '
             set -e
             cd /home/lg/working_dir
             echo "=== Build net module ==="
-            ninja -C out/Default net 2>&1 | tail -20
+            ninja -C out/Default net 2>&1 | tail -30
           '
 
       - name: Collect artifacts
@@ -166,7 +161,7 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends libc++-dev libc++abi-dev
 
-      - name: Compile with clang++
+      - name: Compile with clang++ (verbose)
         run: |
           cd chromium-src
           mkdir -p out/verify
@@ -178,9 +173,9 @@ jobs:
           INCS="$INCS -Ithird_party/partition_alloc"
           DEFS="-DNET_IMPLEMENTATION=1 -DBORINGSSL_IMPLEMENTATION=1"
           DEFS="$DEFS -DOPENSSL_IS_BORINGSSL=1"
-          # Use clang++ with libc++ (Chromium's toolchain of choice)
-          CXX="clang++ -std=c++20 -fPIC -O2 -stdlib=libc++"
+          CXX="clang++ -std=c++20 -fPIC -O2 -stdlib=libc++ -v"
 
+          FIRST_FAIL=""
           PASS=0
           FAIL=0
           for f in net/kiwi/*.cc; do
@@ -189,19 +184,23 @@ jobs:
               echo "$base.cc ... SKIP (needs mojom headers)"
               continue
             fi
-            echo -n "$base.cc ... "
-            if $CXX -c "$f" $INCS $DEFS -o out/verify/$base.o 2>/dev/null; then
-              echo OK
+            echo "=== $base.cc ==="
+            LOG="/tmp/$base.err"
+            if $CXX -c "$f" $INCS $DEFS -o out/verify/$base.o 2>$LOG; then
+              echo "  -> OK"
               PASS=$((PASS+1))
             else
-              echo FAIL
+              echo "  -> FAIL"
+              head -5 $LOG
+              echo "  ... $(wc -l < $LOG) total errors"
               FAIL=$((FAIL+1))
+              [ -z "$FIRST_FAIL" ] && FIRST_FAIL="$base"
             fi
           done
           echo "Result: $PASS passed, $FAIL failed"
-          if [ $FAIL -eq 0 ]; then
-            ar rcs out/verify/libkiwi_network.a out/verify/*.o
-            size=$(stat --format=%s out/verify/libkiwi_network.a)
-            echo "libkiwi_network.a: $size bytes"
+          # Show first full error log for debugging
+          if [ -n "$FIRST_FAIL" ]; then
+            echo "=== First failure ($FIRST_FAIL) full log ==="
+            head -30 /tmp/$FIRST_FAIL.err
           fi
           exit $FAIL
