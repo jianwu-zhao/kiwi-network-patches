@@ -5,32 +5,30 @@ SRC=/home/lg/working_dir/chromium/src
 
 echo "=== Install clang ==="
 apt-get update -qq
-apt-get install -y -qq clang lld curl 2>/dev/null || true
+apt-get install -y -qq clang lld 2>/dev/null || true
 which clang++ && clang++ --version
 
-echo "=== Install Python 3.11 ==="
+echo "=== Install Python 3.10 ==="
 python3 --version
-apt-get install -y -qq python3.10 2>/dev/null || apt-get install -y -qq python3.9 2>/dev/null || true
-if command -v python3.11 &>/dev/null; then
-  update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 2
-elif command -v python3.10 &>/dev/null; then
+apt-get install -y -qq python3.10 2>/dev/null || true
+if command -v python3.10 &>/dev/null; then
   update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 2
-elif command -v python3.9 &>/dev/null; then
-  update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.9 2
 fi
 python3 --version
 
-# If still < 3.10, download static build
+# If still < 3.10, download static Python
 MAJOR=$(python3 -c "import sys; print(sys.version_info[0])")
 MINOR=$(python3 -c "import sys; print(sys.version_info[1])")
 if [ "$MAJOR" -lt 3 ] || ( [ "$MAJOR" -eq 3 ] && [ "$MINOR" -lt 10 ] ); then
-  echo "Python < 3.10, downloading static Python 3.12..."
+  echo "Python $MAJOR.$MINOR < 3.10, downloading static Python 3.10..."
   cd /tmp
-  curl -sL "https://github.com/astral-sh/python-build-standalone/releases/download/20250115/cpython-3.12.8+20250115-x86_64-unknown-linux-gnu-install_only.tar.gz" -o py.tar.gz 2>/dev/null || true
+  curl -sL "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.10.20%2B20260623-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz" -o py.tar.gz
   if [ -f py.tar.gz ] && [ -s py.tar.gz ]; then
     tar xzf py.tar.gz -C /usr/local/ 2>/dev/null || true
-    /usr/local/bin/python3 --version 2>/dev/null && update-alternatives --install /usr/bin/python3 python3 /usr/local/bin/python3 100 || true
-    update-alternatives --set python3 /usr/local/bin/python3 2>/dev/null || true
+    if [ -f /usr/local/bin/python3.10 ]; then
+      update-alternatives --install /usr/bin/python3 python3 /usr/local/bin/python3.10 100
+      update-alternatives --set python3 /usr/local/bin/python3.10 2>/dev/null || true
+    fi
   fi
   python3 --version
 fi
