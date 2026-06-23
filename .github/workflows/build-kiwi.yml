@@ -18,70 +18,81 @@ jobs:
           sudo rm -rf /opt/hostedtoolcache /usr/share/dotnet /usr/local/lib/android /usr/local/share/boost
           df -h /
 
-      - name: Pull image
-        run: docker pull uazo/chromium:143.0.7499.193
-
-      - name: Full Build
-        timeout-minutes: 300
+      - name: Install build deps
         run: |
-          # Start container
-          docker run -d --name kb -v "$PWD/patches:/tmp/p:ro" uazo/chromium:143.0.7499.193 tail -f /dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build curl unzip python3-pip
 
-          # ALL build logic in one script
-          docker exec -u root kb bash -c '
-            set -x
+      - name: Clone Kiwi source (shallow)
+        run: |
+          git clone --depth=1 -b kiwi https://github.com/kiwibrowser/src.next.git /home/runner/kiwi-src 2>&1 | tail -5
 
-            SRC=/home/lg/working_dir/chromium/src
-            DT=/home/lg/working_dir/depot_tools
+      - name: Apply patches
+        run: |
+          cd /home/runner/kiwi-src
+          for pf in "$GITHUB_WORKSPACE/patches"/*.patch; do
+            [ -f "$pf" ] || continue
+            patch -p1 --force < "$pf" 2>&1 | tail -2
+          done
+          mkdir -p net/kiwi/unittests
+          cp "$GITHUB_WORKSPACE/patches"/ech_kyber_integration/*.cc net/kiwi/ 2>/dev/null || true
+          cp "$GITHUB_WORKSPACE/patches"/ech_kyber_integration/*.h net/kiwi/ 2>/dev/null || true
+          cp "$GITHUB_WORKSPACE/patches"/ech_kyber_integration/BUILD.gn net/kiwi/ 2>/dev/null || true
+          # sed integrations
+          grep -q "kiwi_ssl_config" net/socket/ssl_client_socket.cc 2>/dev/null || \
+            sed -i "/#include \"net\/ssl\/ssl_config\"/a #include \"net\/kiwi\/kiwi_ssl_config.h\"" net/socket/ssl_client_socket.cc 2>/dev/null || true
+          grep -q "ConfigureKiwiSSL" net/socket/ssl_client_socket.cc 2>/dev/null || \
+            sed -i "/SSL_set_connect_state(ssl_.get())/a \/\/ Kiwi SSL\n  ConfigureKiwiSSL(ssl_.get(), ssl_ctx_.get(), ssl_config_);" net/socket/ssl_client_socket.cc 2>/dev/null || true
+          grep -q "kiwi_dns_handler" net/dns/host_resolver_manager.cc 2>/dev/null || \
+            sed -i "/#include \"net\/dns\/host_resolver_manager.h\"/a #include \"net\/kiwi\/kiwi_dns_handler.h\"" net/dns/host_resolver_manager.cc 2>/dev/null || true
+          grep -q "kiwi_url_request" net/url_request/url_request_http_job.cc 2>/dev/null || \
+            sed -i "/#include \"net\/url_request\/url_request_http_job.h\"/a #include \"net\/kiwi\/kiwi_url_request.h\"" net/url_request/url_request_http_job.cc 2>/dev/null || true
+          grep -q "kiwi_system_net" chrome/browser/net/system_network_context_manager.cc 2>/dev/null || \
+            sed -i "/#include \"chrome\/browser\/net\/system_network_context_manager.h\"/a #include \"net\/kiwi\/kiwi_system_net.h\"" chrome/browser/net/system_network_context_manager.cc 2>/dev/null || true
+          sed -i "s/base::FEATURE_DISABLED_BY_DEFAULT};$/base::FEATURE_ENABLED_BY_DEFAULT};/g" net/base/features.cc 2>/dev/null || true
+          echo "Patches applied"
 
-            echo "=== 1. Check source ==="
-            ls "$SRC/net/" | head -3
-            ls "$DT/gn" "$DT/ninja"
+      - name: Install Chromium build deps
+        run: |
+          cd /home/runner/kiwi-src
+          # Run Chromium's install-build-deps for Android
+          sudo ./build/install-build-deps.sh --android --no-prompt 2>&1 | tail -10 || echo "install-build-deps may have failed, continuing"
 
-            echo "=== 2. Install clang (required for Chromium build) ==="
-            apt-get update -qq 2>/dev/null
-            apt-get install -y -qq clang-10 lld-10 2>/dev/null || apt-get install -y -qq clang lld 2>/dev/null || echo "apt failed"
-            which clang++ 2>/dev/null && clang++ --version || echo "NO clang++"
+      - name: Get Clang toolchain
+        run: |
+          cd /home/runner/kiwi-src
+          python3 tools/clang/scripts/update.py 2>&1 | tail -5 || echo "clang update failed"
+          ls third_party/llvm-build/Release+Asserts/bin/clang++ 2>/dev/null || echo "no clang++"
 
-            echo "=== 3. Apply patches ==="
-            cd "$SRC"
-            for pf in /tmp/p/*.patch; do
-              [ -f "$pf" ] || continue
-              patch -p1 --force < "$pf" 2>&1 | tail -2
-            done
-            mkdir -p net/kiwi/unittests
-            cp /tmp/p/ech_kyber_integration/*.cc net/kiwi/ 2>/dev/null || true
-            cp /tmp/p/ech_kyber_integration/*.h net/kiwi/ 2>/dev/null || true
-            cp /tmp/p/ech_kyber_integration/BUILD.gn net/kiwi/ 2>/dev/null || true
-            # sed integrations
-            grep -q "kiwi_ssl_config" net/socket/ssl_client_socket.cc 2>/dev/null || sed -i "/#include \"net\/ssl\/ssl_config\"/a #include \"net\/kiwi\/kiwi_ssl_config.h\"" net/socket/ssl_client_socket.cc 2>/dev/null || true
-            grep -q "ConfigureKiwiSSL" net/socket/ssl_client_socket.cc 2>/dev/null || sed -i "/SSL_set_connect_state(ssl_.get())/a \/\/ Kiwi SSL\n  ConfigureKiwiSSL(ssl_.get(), ssl_ctx_.get(), ssl_config_);" net/socket/ssl_client_socket.cc 2>/dev/null || true
-            grep -q "kiwi_dns_handler" net/dns/host_resolver_manager.cc 2>/dev/null || sed -i "/#include \"net\/dns\/host_resolver_manager.h\"/a #include \"net\/kiwi\/kiwi_dns_handler.h\"" net/dns/host_resolver_manager.cc 2>/dev/null || true
-            grep -q "kiwi_url_request" net/url_request/url_request_http_job.cc 2>/dev/null || sed -i "/#include \"net\/url_request\/url_request_http_job.h\"/a #include \"net\/kiwi\/kiwi_url_request.h\"" net/url_request/url_request_http_job.cc 2>/dev/null || true
-            grep -q "kiwi_system_net" chrome/browser/net/system_network_context_manager.cc 2>/dev/null || sed -i "/#include \"chrome\/browser\/net\/system_network_context_manager.h\"/a #include \"net\/kiwi\/kiwi_system_net.h\"" chrome/browser/net/system_network_context_manager.cc 2>/dev/null || true
-            sed -i "s/base::FEATURE_DISABLED_BY_DEFAULT};$/base::FEATURE_ENABLED_BY_DEFAULT};/g" net/base/features.cc 2>/dev/null || true
-            echo "Patches applied"
+      - name: GN Gen
+        run: |
+          cd /home/runner/kiwi-src
+          # depot_tools gn or buildtools gn?
+          GN=$(find /home/runner/kiwi-src/buildtools -name "gn" -type f 2>/dev/null | head -1)
+          if [ -z "$GN" ]; then
+            # Try to install gn
+            cd /tmp
+            curl -sL "https://chrome-infra-packages.appspot.com/dl/gn/gn/linux-amd64/+/latest" -o gn.zip
+            unzip -o gn.zip 2>/dev/null
+            chmod +x gn
+            GN=/tmp/gn
+          fi
+          echo "Using gn: $GN"
+          cd /home/runner/kiwi-src
+          $GN gen out/android --args="target_os=\"android\" target_cpu=\"arm64\" is_debug=false symbol_level=0 is_official_build=true enable_remoting=false enable_nacl=false proprietary_codecs=false ffmpeg_branding=\"Chromium\" enable_quic=true enable_http3=true enable_ech=true enable_quic_connection_migration=true enable_quic_0rtt=true" 2>&1
 
-            echo "=== 4. gn gen ==="
-            export PATH="$DT:$PATH"
-            gn gen out/android --args="target_os=\"android\" target_cpu=\"arm64\" is_debug=false symbol_level=0 is_official_build=true enable_remoting=false enable_nacl=false proprietary_codecs=false ffmpeg_branding=\"Chromium\" enable_quic=true enable_http3=true enable_ech=true enable_quic_connection_migration=true enable_quic_0rtt=true" 2>&1
-            echo "gn gen exit: $?"
+      - name: Ninja build
+        timeout-minutes: 180
+        run: |
+          cd /home/runner/kiwi-src
+          ninja -C out/android chrome_public_apk 2>&1
 
-            echo "=== 5. ninja build ==="
-            ninja -C out/android chrome_public_apk 2>&1
-            echo "ninja exit: $?"
-
-            echo "=== 6. Find APK ==="
-            find out/android -name "*.apk" 2>/dev/null | head -5
-            ls -la out/android/apks/ 2>/dev/null || true
-          ' 2>&1 | tee /tmp/build_log.txt
-
-          # Extract APK
+      - name: Extract APK
+        if: always()
+        run: |
           mkdir -p apk-output
-          docker cp kb:/home/lg/working_dir/chromium/src/out/android/apks/ apk-output/ 2>/dev/null || true
-          docker cp kb:/home/lg/working_dir/chromium/src/out/android/Release/ apk-output/ 2>/dev/null || true
-          find apk-output/ -name "*.apk" -exec ls -lh {} \; || echo "no apk found"
-          docker rm -f kb || true
+          find /home/runner/kiwi-src/out/android -name "*.apk" -exec cp {} apk-output/ \; 2>/dev/null || true
+          ls -lh apk-output/ 2>/dev/null || echo "no APK files"
 
       - name: Upload APK
         if: always()
