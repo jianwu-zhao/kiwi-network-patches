@@ -9,66 +9,58 @@ env:
   PATCH_DIR: ${{ github.workspace }}/patches
 
 jobs:
-  # -----------------------------------------------------------
-  # Verify patch file structure
-  # -----------------------------------------------------------
-  verify_patches:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          path: patches
-
-      - name: Check patch files exist
-        run: |
-          echo "CC files: $(ls patches/ech_kyber_integration/*.cc 2>/dev/null | wc -l)"
-          echo "H  files: $(ls patches/ech_kyber_integration/*.h 2>/dev/null | wc -l)"
-          echo "BUILD.gn: $(ls patches/ech_kyber_integration/BUILD.gn 2>/dev/null)"
-
-  # -----------------------------------------------------------
-  # Quick syntax check with clang++ inside Docker
-  # -----------------------------------------------------------
+  # ============================================================
+  # Syntax check with clang++ inside Docker
+  # ============================================================
   syntax_check:
-    needs: [verify_patches]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           path: patches
+
       - name: Free disk
         run: sudo rm -rf /opt/hostedtoolcache /usr/share/dotnet /usr/local/lib/android
-      - name: Pull Chromium build image
+
+      - name: Pull image
         run: docker pull uazo/chromium:143.0.7499.193
-      - name: Compile .cc files inside Docker
+
+      - name: Verify files
         run: |
+          echo "PWD=$PWD"
+          echo "Files in patches/ech_kyber_integration/:"
+          ls patches/ech_kyber_integration/*.cc | wc -l
+          echo "cc files found"
+
+      - name: Compile inside Docker
+        run: |
+          set -x
           docker run -d --name kb uazo/chromium:143.0.7499.193 tail -f /dev/null
           docker exec kb mkdir -p /home/lg/working_dir/net/kiwi
-          docker cp patches/ech_kyber_integration/. kb:/home/lg/working_dir/net/kiwi/ 2>/dev/null || true
-          docker exec kb bash -c '
-            cd /home/lg/working_dir
-            INCS="-I. -Inet -Ibase -Ibuild -Ibuild_overrides"
-            INCS="$INCS -Ithird_party/boringssl/src/include -Ithird_party/zlib -Iurl -Icrypto"
-            INCS="$INCS -Ithird_party/abseil-cpp -Ithird_party/perfetto"
-            INCS="$INCS -Ithird_party/googletest/src/googletest/include -Ithird_party/partition_alloc"
-            DEFS="-DNET_IMPLEMENTATION=1 -DBORINGSSL_IMPLEMENTATION=1 -DOPENSSL_IS_BORINGSSL=1"
-            CXX="clang++ -std=c++20 -fPIC -O2 -stdlib=libc++"
-            mkdir -p out/kiwi_obj; FAIL=0
-            for f in net/kiwi/*.cc; do
-              base=$(basename $f .cc)
-              [ "$base" = "mojo_ipc_integration" ] && echo "SKIP $base.cc" && continue
-              if $CXX -c "$f" $INCS $DEFS -o out/kiwi_obj/$base.o 2>/tmp/e.txt; then
-                echo "PASS $base.cc"
-              else
-                echo "FAIL $base.cc"; head -3 /tmp/e.txt; FAIL=$((FAIL+1))
-              fi
-            done
-            echo "Result: $FAIL failures"; exit $FAIL
-          '
+          docker cp "$PWD/patches/ech_kyber_integration/." kb:/home/lg/working_dir/net/kiwi/
+          docker exec kb ls /home/lg/working_dir/net/kiwi/*.cc 2>&1 | head -5
+          docker exec kb bash -c "cd /home/lg/working_dir && \
+            INCS=\"-I. -Inet -Ibase -Ibuild -Ibuild_overrides\" && \
+            INCS=\"\$INCS -Ithird_party/boringssl/src/include -Ithird_party/zlib -Iurl -Icrypto\" && \
+            INCS=\"\$INCS -Ithird_party/abseil-cpp -Ithird_party/perfetto -Ithird_party/googletest/src/googletest/include -Ithird_party/partition_alloc\" && \
+            DEFS=\"-DNET_IMPLEMENTATION=1 -DBORINGSSL_IMPLEMENTATION=1 -DOPENSSL_IS_BORINGSSL=1\" && \
+            CXX=\"clang++ -std=c++20 -fPIC -O2 -stdlib=libc++\" && \
+            mkdir -p out/kobj && FAIL=0 && \
+            for f in net/kiwi/*.cc; do \
+              base=\$(basename \$f .cc); \
+              [ \"\$base\" = \"mojo_ipc_integration\" ] && echo \"SKIP \$base.cc\" && continue; \
+              if \$CXX -c \"\$f\" \$INCS \$DEFS -o out/kobj/\$base.o 2>/tmp/e.txt; then \
+                echo \"PASS \$base.cc\"; \
+              else \
+                echo \"FAIL \$base.cc\"; head -3 /tmp/e.txt; FAIL=\$((FAIL+1)); \
+              fi; \
+            done; \
+            echo \"RESULT: \$FAIL failures\"; exit \$FAIL"
           docker rm -f kb
 
-  # -----------------------------------------------------------
+  # ============================================================
   # Full Kiwi APK build
-  # -----------------------------------------------------------
+  # ============================================================
   build_apk:
     needs: [syntax_check]
     runs-on: ubuntu-latest
@@ -77,112 +69,78 @@ jobs:
         with:
           path: patches
 
-      - name: Free disk space
-        run: |
-          sudo rm -rf /opt/hostedtoolcache /usr/share/dotnet /usr/local/lib/android
-          df -h / | tail -1
+      - name: Free disk
+        run: sudo rm -rf /opt/hostedtoolcache /usr/share/dotnet /usr/local/lib/android
 
-      - name: Pull Chromium build image
+      - name: Pull image
         run: docker pull uazo/chromium:143.0.7499.193
 
-      - name: Build Kiwi APK inside Docker
+      - name: Full Kiwi APK build
         run: |
-          # Start container with the build image
-          docker run -d --name kiwi-build \
-            -v $PWD/patches:/tmp/patches:ro \
-            uazo/chromium:143.0.7499.193 \
-            tail -f /dev/null
+          set -x
+          # Start container
+          docker run -d --name kb -v "$PWD/patches:/tmp/patches:ro" uazo/chromium:143.0.7499.193 tail -f /dev/null
 
-          # Clone Kiwi source (fast: --depth=1, branch=kiwi)
-          docker exec kiwi-build bash -c '
-            cd /home/lg
-            git clone --depth=1 -b kiwi https://github.com/kiwibrowser/src.next.git kiwi-src 2>&1 | tail -3
-            echo "Clone done: $(du -sh kiwi-src | cut -f1)"
-          '
+          # Clone Kiwi source
+          docker exec kb bash -c 'cd /home/lg && git clone --depth=1 -b kiwi https://github.com/kiwibrowser/src.next.git kiwi-src 2>&1 | tail -3'
 
           # Apply patches
-          docker exec kiwi-build bash -c '
-            set -x
+          docker exec kb bash -c '
             cd /home/lg/kiwi-src
-
-            # 1. Apply build_config.patch (GN args)
-            patch -p1 < /tmp/patches/build_config.patch || echo "patch build_config skipped or already applied"
-
-            # 2. Apply feature patches
-            patch -p1 < /tmp/patches/net_base_features.patch || echo "patch net_base_features skipped"
-            patch -p1 < /tmp/patches/enable_quic_http3.patch || echo "patch enable_quic_http3 skipped"
-            patch -p1 < /tmp/patches/doh_config.patch || echo "patch doh_config skipped"
-            patch -p1 < /tmp/patches/dns_https_svcb.patch || echo "patch dns_https_svcb skipped"
-            patch -p1 < /tmp/patches/quic_http3_config.patch || echo "patch quic_http3_config skipped"
-            patch -p1 < /tmp/patches/ssl_tls_config.patch || echo "patch ssl_tls_config skipped"
-
-            # 3. Copy Kiwi extension files
+            patch -p1 < /tmp/patches/build_config.patch || true
+            patch -p1 < /tmp/patches/net_base_features.patch || true
+            patch -p1 < /tmp/patches/enable_quic_http3.patch || true
+            patch -p1 < /tmp/patches/doh_config.patch || true
+            patch -p1 < /tmp/patches/dns_https_svcb.patch || true
+            patch -p1 < /tmp/patches/quic_http3_config.patch || true
+            patch -p1 < /tmp/patches/ssl_tls_config.patch || true
             mkdir -p net/kiwi/unittests
-            cp /tmp/patches/ech_kyber_integration/*.cc net/kiwi/ 2>/dev/null || true
-            cp /tmp/patches/ech_kyber_integration/*.h net/kiwi/ 2>/dev/null || true
-            cp /tmp/patches/ech_kyber_integration/BUILD.gn net/kiwi/ 2>/dev/null || true
-
-            # 4. Apply integration scripts (sed-based injections)
-            echo "=== Integration points ==="
-            grep -q "kiwi_ssl_config" net/socket/ssl_client_socket.cc 2>/dev/null || \
+            cp /tmp/patches/ech_kyber_integration/*.cc net/kiwi/ 2>/dev/null
+            cp /tmp/patches/ech_kyber_integration/*.h net/kiwi/ 2>/dev/null
+            cp /tmp/patches/ech_kyber_integration/BUILD.gn net/kiwi/ 2>/dev/null
+            # Apply sed integrations
+            grep -q "kiwi_ssl_config" net/socket/ssl_client_socket.cc || \
               sed -i "/#include \"net\/ssl\/ssl_config\"/a #include \"net\/kiwi\/kiwi_ssl_config.h\"" net/socket/ssl_client_socket.cc
-            grep -q "ConfigureKiwiSSL" net/socket/ssl_client_socket.cc 2>/dev/null || \
+            grep -q "ConfigureKiwiSSL" net/socket/ssl_client_socket.cc || \
               sed -i "/SSL_set_connect_state(ssl_.get())/a \/\/ Kiwi SSL\n  ConfigureKiwiSSL(ssl_.get(), ssl_ctx_.get(), ssl_config_);" net/socket/ssl_client_socket.cc
-            grep -q "kiwi_dns_handler" net/dns/host_resolver_manager.cc 2>/dev/null || \
+            grep -q "kiwi_dns_handler" net/dns/host_resolver_manager.cc || \
               sed -i "/#include \"net\/dns\/host_resolver_manager.h\"/a #include \"net\/kiwi\/kiwi_dns_handler.h\"" net/dns/host_resolver_manager.cc
-            grep -q "kiwi_url_request" net/url_request/url_request_http_job.cc 2>/dev/null || \
+            grep -q "kiwi_url_request" net/url_request/url_request_http_job.cc || \
               sed -i "/#include \"net\/url_request\/url_request_http_job.h\"/a #include \"net\/kiwi\/kiwi_url_request.h\"" net/url_request/url_request_http_job.cc
-            grep -q "kiwi_system_net" chrome/browser/net/system_network_context_manager.cc 2>/dev/null || \
+            grep -q "kiwi_system_net" chrome/browser/net/system_network_context_manager.cc || \
               sed -i "/#include \"chrome\/browser\/net\/system_network_context_manager.h\"/a #include \"net\/kiwi\/kiwi_system_net.h\"" chrome/browser/net/system_network_context_manager.cc
-
-            # 5. Enable feature flags via sed
+            # Enable features
             sed -i "s/base::FEATURE_DISABLED_BY_DEFAULT};$/base::FEATURE_ENABLED_BY_DEFAULT};/g" net/base/features.cc
-
-            echo "=== Patches applied ==="
+            echo "Patches applied OK"
           '
 
-          # GN Gen
-          docker exec kiwi-build bash -c '
+      - name: GN Gen
+        run: |
+          docker exec kb bash -c '
             set -x
             cd /home/lg/kiwi-src
-            gn gen out/android --args="
-              target_os=\"android\"
-              target_cpu=\"arm64\"
-              is_debug=false
-              symbol_level=0
-              is_official_build=true
-              enable_remoting=false
-              enable_nacl=false
-              proprietary_codecs=false
-              ffmpeg_branding=\"Chromium\"
-              enable_quic=true
-              enable_http3=true
-              enable_ech=true
-              enable_quic_connection_migration=true
-              enable_quic_0rtt=true
-            " 2>&1 | tail -20
-            echo "GN gen exit: $?"
+            gn gen out/android --args="target_os=\"android\" target_cpu=\"arm64\" is_debug=false symbol_level=0 is_official_build=true enable_remoting=false enable_nacl=false proprietary_codecs=false ffmpeg_branding=\"Chromium\" enable_quic=true enable_http3=true enable_ech=true enable_quic_connection_migration=true enable_quic_0rtt=true" 2>&1 | tail -20
+            exit ${PIPESTATUS[0]}
           '
 
-      - name: Ninja build (chrome_public_apk)
+      - name: Ninja build (2-3 hours)
         timeout-minutes: 180
         run: |
-          docker exec kiwi-build bash -c '
+          docker exec kb bash -c '
             set -x
             cd /home/lg/kiwi-src
-            echo "Starting chrome_public_apk build (may take 2-3 hours)..."
+            echo "Starting chrome_public_apk build..."
             ninja -C out/android chrome_public_apk 2>&1 | tail -50
-            echo "Ninja exit: $?"
+            exit ${PIPESTATUS[0]}
           '
 
       - name: Extract APK
         if: always()
         run: |
           mkdir -p apk-output
-          docker exec kiwi-build find /home/lg/kiwi-src/out/android -name "*.apk" 2>/dev/null | head -10
-          docker cp kiwi-build:/home/lg/kiwi-src/out/android/apks/ apk-output/ 2>/dev/null || true
-          docker cp kiwi-build:/home/lg/kiwi-src/out/android/Release/ apk-output/ 2>/dev/null || true
-          find apk-output/ -name "*.apk" -exec ls -lh {} \; 2>/dev/null | head -5
+          docker exec kb find /home/lg/kiwi-src/out/android -name "*.apk" 2>/dev/null | head -5
+          docker cp kb:/home/lg/kiwi-src/out/android/apks/ apk-output/ 2>/dev/null || true
+          find apk-output/ -name "*.apk" -exec ls -lh {} \; 2>/dev/null
 
       - name: Upload APK
         if: always()
@@ -194,4 +152,4 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: docker rm -f kiwi-build 2>/dev/null
+        run: docker rm -f kb 2>/dev/null
