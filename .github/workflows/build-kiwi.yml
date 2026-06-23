@@ -38,48 +38,78 @@ jobs:
           cp "$GITHUB_WORKSPACE/patches"/ech_kyber_integration/*.cc net/kiwi/ 2>/dev/null || true
           cp "$GITHUB_WORKSPACE/patches"/ech_kyber_integration/*.h net/kiwi/ 2>/dev/null || true
           cp "$GITHUB_WORKSPACE/patches"/ech_kyber_integration/BUILD.gn net/kiwi/ 2>/dev/null || true
-          # sed integrations
-          grep -q "kiwi_ssl_config" net/socket/ssl_client_socket.cc 2>/dev/null || \
-            sed -i "/#include \"net\/ssl\/ssl_config\"/a #include \"net\/kiwi\/kiwi_ssl_config.h\"" net/socket/ssl_client_socket.cc 2>/dev/null || true
-          grep -q "ConfigureKiwiSSL" net/socket/ssl_client_socket.cc 2>/dev/null || \
-            sed -i "/SSL_set_connect_state(ssl_.get())/a \/\/ Kiwi SSL\n  ConfigureKiwiSSL(ssl_.get(), ssl_ctx_.get(), ssl_config_);" net/socket/ssl_client_socket.cc 2>/dev/null || true
-          grep -q "kiwi_dns_handler" net/dns/host_resolver_manager.cc 2>/dev/null || \
-            sed -i "/#include \"net\/dns\/host_resolver_manager.h\"/a #include \"net\/kiwi\/kiwi_dns_handler.h\"" net/dns/host_resolver_manager.cc 2>/dev/null || true
-          grep -q "kiwi_url_request" net/url_request/url_request_http_job.cc 2>/dev/null || \
-            sed -i "/#include \"net\/url_request\/url_request_http_job.h\"/a #include \"net\/kiwi\/kiwi_url_request.h\"" net/url_request/url_request_http_job.cc 2>/dev/null || true
-          grep -q "kiwi_system_net" chrome/browser/net/system_network_context_manager.cc 2>/dev/null || \
-            sed -i "/#include \"chrome\/browser\/net\/system_network_context_manager.h\"/a #include \"net\/kiwi\/kiwi_system_net.h\"" chrome/browser/net/system_network_context_manager.cc 2>/dev/null || true
+          grep -q "kiwi_ssl_config" net/socket/ssl_client_socket.cc 2>/dev/null || sed -i "/#include \"net\/ssl\/ssl_config\"/a #include \"net\/kiwi\/kiwi_ssl_config.h\"" net/socket/ssl_client_socket.cc 2>/dev/null || true
+          grep -q "ConfigureKiwiSSL" net/socket/ssl_client_socket.cc 2>/dev/null || sed -i "/SSL_set_connect_state(ssl_.get())/a \/\/ Kiwi SSL\n  ConfigureKiwiSSL(ssl_.get(), ssl_ctx_.get(), ssl_config_);" net/socket/ssl_client_socket.cc 2>/dev/null || true
+          grep -q "kiwi_dns_handler" net/dns/host_resolver_manager.cc 2>/dev/null || sed -i "/#include \"net\/dns\/host_resolver_manager.h\"/a #include \"net\/kiwi\/kiwi_dns_handler.h\"" net/dns/host_resolver_manager.cc 2>/dev/null || true
+          grep -q "kiwi_url_request" net/url_request/url_request_http_job.cc 2>/dev/null || sed -i "/#include \"net\/url_request\/url_request_http_job.h\"/a #include \"net\/kiwi\/kiwi_url_request.h\"" net/url_request/url_request_http_job.cc 2>/dev/null || true
+          grep -q "kiwi_system_net" chrome/browser/net/system_network_context_manager.cc 2>/dev/null || sed -i "/#include \"chrome\/browser\/net\/system_network_context_manager.h\"/a #include \"net\/kiwi\/kiwi_system_net.h\"" chrome/browser/net/system_network_context_manager.cc 2>/dev/null || true
           sed -i "s/base::FEATURE_DISABLED_BY_DEFAULT};$/base::FEATURE_ENABLED_BY_DEFAULT};/g" net/base/features.cc 2>/dev/null || true
           echo "Patches applied"
 
       - name: Install Chromium build deps
         run: |
           cd /home/runner/kiwi-src
-          # Run Chromium's install-build-deps for Android
-          sudo ./build/install-build-deps.sh --android --no-prompt 2>&1 | tail -10 || echo "install-build-deps may have failed, continuing"
+          sudo ./build/install-build-deps.sh --android --no-prompt 2>&1 | tail -10 || echo "install-build-deps had issues (continuing)"
 
       - name: Get Clang toolchain
         run: |
           cd /home/runner/kiwi-src
-          python3 tools/clang/scripts/update.py 2>&1 | tail -5 || echo "clang update failed"
-          ls third_party/llvm-build/Release+Asserts/bin/clang++ 2>/dev/null || echo "no clang++"
+          python3 tools/clang/scripts/update.py 2>&1 | tail -5 || echo "clang update had issues"
+          echo "clang++ at:"
+          ls -la third_party/llvm-build/Release+Asserts/bin/clang++ 2>/dev/null || echo "not found"
+
+      - name: Install gn
+        run: |
+          # Check if gn is already available
+          if which gn 2>/dev/null; then
+            echo "gn already installed: $(gn --version)"
+            exit 0
+          fi
+          # Try to find in source tree
+          if [ -f /home/runner/kiwi-src/buildtools/linux64/gn ]; then
+            echo "Found gn in buildtools:"
+            /home/runner/kiwi-src/buildtools/linux64/gn --version
+            sudo cp /home/runner/kiwi-src/buildtools/linux64/gn /usr/local/bin/
+            exit 0
+          fi
+          # Download from CIPD
+          echo "Downloading gn from CIPD..."
+          mkdir -p /tmp/gn-install
+          curl -sL --max-time 30 "https://chrome-infra-packages.appspot.com/dl/gn/gn/linux-amd64/+/latest" -o /tmp/gn-install/gn.zip
+          if [ $? -eq 0 ] && [ -s /tmp/gn-install/gn.zip ]; then
+            (cd /tmp/gn-install && unzip -o gn.zip 2>/dev/null) && \
+            chmod +x /tmp/gn-install/gn && \
+            sudo cp /tmp/gn-install/gn /usr/local/bin/ && \
+            echo "gn installed from CIPD" && \
+            gn --version && exit 0
+          fi
+          # Build from source
+          echo "Building gn from source..."
+          cd /home/runner/kiwi-src/tools/gn
+          if [ -f bootstrap.py ]; then
+            python3 bootstrap.py 2>&1 | tail -10
+            if [ -f out/gn ]; then
+              sudo cp out/gn /usr/local/bin/
+              echo "gn built from source"
+              gn --version
+              exit 0
+            fi
+          fi
+          echo "FAILED: gn not available after all attempts"
+          ls /home/runner/kiwi-src/buildtools/linux64/ 2>/dev/null || echo "no buildtools/linux64"
+          exit 1
 
       - name: GN Gen
         run: |
           cd /home/runner/kiwi-src
-          # depot_tools gn or buildtools gn?
-          GN=$(find /home/runner/kiwi-src/buildtools -name "gn" -type f 2>/dev/null | head -1)
+          GN=$(which gn 2>/dev/null)
           if [ -z "$GN" ]; then
-            # Try to install gn
-            cd /tmp
-            curl -sL "https://chrome-infra-packages.appspot.com/dl/gn/gn/linux-amd64/+/latest" -o gn.zip
-            unzip -o gn.zip 2>/dev/null
-            chmod +x gn
-            GN=/tmp/gn
+            echo "FATAL: gn not found!"
+            exit 1
           fi
-          echo "Using gn: $GN"
-          cd /home/runner/kiwi-src
-          $GN gen out/android --args="target_os=\"android\" target_cpu=\"arm64\" is_debug=false symbol_level=0 is_official_build=true enable_remoting=false enable_nacl=false proprietary_codecs=false ffmpeg_branding=\"Chromium\" enable_quic=true enable_http3=true enable_ech=true enable_quic_connection_migration=true enable_quic_0rtt=true" 2>&1
+          echo "Using: $GN ($($GN --version 2>/dev/null))"
+          $GN gen out/android --args='target_os="android" target_cpu="arm64" is_debug=false symbol_level=0 is_official_build=true enable_remoting=false enable_nacl=false proprietary_codecs=false ffmpeg_branding="Chromium" enable_quic=true enable_http3=true enable_ech=true enable_quic_connection_migration=true enable_quic_0rtt=true'
+          echo "gn gen exit code: $?"
 
       - name: Ninja build
         timeout-minutes: 180
