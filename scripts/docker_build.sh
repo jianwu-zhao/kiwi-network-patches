@@ -8,30 +8,21 @@ apt-get update -qq
 apt-get install -y -qq clang lld 2>/dev/null || true
 which clang++ && clang++ --version
 
-echo "=== Install Python 3.10 ==="
+echo "=== Download Python 3.10 static ==="
 python3 --version
-apt-get install -y -qq python3.10 2>/dev/null || true
-if command -v python3.10 &>/dev/null; then
-  update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 2
+cd /tmp
+curl -sL "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.10.20%2B20260623-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz" -o py.tar.gz
+echo "Downloaded $(stat -c%s py.tar.gz 2>/dev/null || echo 0) bytes"
+if [ -f py.tar.gz ] && [ -s py.tar.gz ]; then
+  tar xzf py.tar.gz -C /usr/local/
+  ls /usr/local/bin/python3
+  /usr/local/bin/python3 --version
+  update-alternatives --install /usr/bin/python3 python3 /usr/local/bin/python3 100
+  update-alternatives --set python3 /usr/local/bin/python3 2>/dev/null || true
+else
+  echo "Download failed, using system python3"
 fi
-python3 --version
-
-# If still < 3.10, download static Python
-MAJOR=$(python3 -c "import sys; print(sys.version_info[0])")
-MINOR=$(python3 -c "import sys; print(sys.version_info[1])")
-if [ "$MAJOR" -lt 3 ] || ( [ "$MAJOR" -eq 3 ] && [ "$MINOR" -lt 10 ] ); then
-  echo "Python $MAJOR.$MINOR < 3.10, downloading static Python 3.10..."
-  cd /tmp
-  curl -sL "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.10.20%2B20260623-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz" -o py.tar.gz
-  if [ -f py.tar.gz ] && [ -s py.tar.gz ]; then
-    tar xzf py.tar.gz -C /usr/local/ 2>/dev/null || true
-    if [ -f /usr/local/bin/python3.10 ]; then
-      update-alternatives --install /usr/bin/python3 python3 /usr/local/bin/python3.10 100
-      update-alternatives --set python3 /usr/local/bin/python3.10 2>/dev/null || true
-    fi
-  fi
-  python3 --version
-fi
+echo "Final Python: $(python3 --version)"
 
 echo "=== Download Chromium clang toolchain ==="
 cd "$SRC"
