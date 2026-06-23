@@ -32,30 +32,41 @@ jobs:
           ls patches/ech_kyber_integration/*.cc | wc -l
           echo "cc files found"
 
+      - name: Check tools
+        run: |
+          docker run --rm uazo/chromium:143.0.7499.193 bash -c 'which clang++ g++ gn ninja 2>&1; echo "---"; echo $PATH'
+
       - name: Compile inside Docker
         run: |
           set -x
           docker run -d --name kb uazo/chromium:143.0.7499.193 tail -f /dev/null
           docker exec kb mkdir -p /home/lg/working_dir/net/kiwi
           docker cp "$PWD/patches/ech_kyber_integration/." kb:/home/lg/working_dir/net/kiwi/
-          docker exec kb ls /home/lg/working_dir/net/kiwi/*.cc 2>&1 | head -5
-          docker exec kb bash -c "cd /home/lg/working_dir && \
-            INCS=\"-I. -Inet -Ibase -Ibuild -Ibuild_overrides\" && \
-            INCS=\"\$INCS -Ithird_party/boringssl/src/include -Ithird_party/zlib -Iurl -Icrypto\" && \
-            INCS=\"\$INCS -Ithird_party/abseil-cpp -Ithird_party/perfetto -Ithird_party/googletest/src/googletest/include -Ithird_party/partition_alloc\" && \
-            DEFS=\"-DNET_IMPLEMENTATION=1 -DBORINGSSL_IMPLEMENTATION=1 -DOPENSSL_IS_BORINGSSL=1\" && \
-            CXX=\"clang++ -std=c++20 -fPIC -O2 -stdlib=libc++\" && \
-            mkdir -p out/kobj && FAIL=0 && \
-            for f in net/kiwi/*.cc; do \
-              base=\$(basename \$f .cc); \
-              [ \"\$base\" = \"mojo_ipc_integration\" ] && echo \"SKIP \$base.cc\" && continue; \
-              if \$CXX -c \"\$f\" \$INCS \$DEFS -o out/kobj/\$base.o 2>/tmp/e.txt; then \
-                echo \"PASS \$base.cc\"; \
-              else \
-                echo \"FAIL \$base.cc\"; head -3 /tmp/e.txt; FAIL=\$((FAIL+1)); \
-              fi; \
-            done; \
-            echo \"RESULT: \$FAIL failures\"; exit \$FAIL"
+
+          # Use single quotes to avoid all escaping issues
+          docker exec kb bash -c '
+            cd /home/lg/working_dir
+            INCS="-I. -Inet -Ibase -Ibuild -Ibuild_overrides"
+            INCS="$INCS -Ithird_party/boringssl/src/include -Ithird_party/zlib -Iurl -Icrypto"
+            INCS="$INCS -Ithird_party/abseil-cpp -Ithird_party/perfetto -Ithird_party/googletest/src/googletest/include -Ithird_party/partition_alloc"
+            DEFS="-DNET_IMPLEMENTATION=1 -DBORINGSSL_IMPLEMENTATION=1 -DOPENSSL_IS_BORINGSSL=1"
+            CXX="clang++ -std=c++20 -fPIC -O2 -stdlib=libc++"
+            mkdir -p out/kobj
+            FAIL=0
+            for f in net/kiwi/*.cc; do
+              base=$(basename $f .cc)
+              [ "$base" = "mojo_ipc_integration" ] && echo "SKIP $base.cc" && continue
+              if $CXX -c "$f" $INCS $DEFS -o out/kobj/$base.o 2>/tmp/e.txt; then
+                echo "PASS $base.cc"
+              else
+                echo "FAIL $base.cc"
+                head -3 /tmp/e.txt
+                FAIL=$((FAIL+1))
+              fi
+            done
+            echo "RESULT: $FAIL failures"
+            exit $FAIL
+          '
           docker rm -f kb
 
   # ============================================================
