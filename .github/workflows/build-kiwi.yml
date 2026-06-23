@@ -65,16 +65,16 @@ jobs:
         run: |
           # Build a derived image with Kiwi patches copied in
           cat > Dockerfile << 'DOCKERFILE'
-FROM uazo/chromium:143.0.7499.193
-USER root
-RUN mkdir -p /home/lg/working_dir/net/kiwi
-COPY patches/ech_kyber_integration/*.cc /home/lg/working_dir/net/kiwi/
-COPY patches/ech_kyber_integration/*.h  /home/lg/working_dir/net/kiwi/
-COPY patches/ech_kyber_integration/BUILD.gn /home/lg/working_dir/net/kiwi/
-RUN chown -R lg:lg /home/lg/working_dir/net/kiwi
-USER lg
-WORKDIR /home/lg/working_dir
-DOCKERFILE
+          FROM uazo/chromium:143.0.7499.193
+          USER root
+          RUN mkdir -p /home/lg/working_dir/net/kiwi
+          COPY patches/ech_kyber_integration/*.cc /home/lg/working_dir/net/kiwi/
+          COPY patches/ech_kyber_integration/*.h  /home/lg/working_dir/net/kiwi/
+          COPY patches/ech_kyber_integration/BUILD.gn /home/lg/working_dir/net/kiwi/
+          RUN chown -R lg:lg /home/lg/working_dir/net/kiwi
+          USER lg
+          WORKDIR /home/lg/working_dir
+          DOCKERFILE
           docker build -t kiwi-builder .
 
       - name: GN Gen & Ninja build (Android arm64)
