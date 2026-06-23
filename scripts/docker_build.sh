@@ -1,14 +1,25 @@
 #!/bin/bash
-# This script runs INSIDE the Docker container as root
+# Inside Docker container as root
 set -e
 
 SRC=/home/lg/working_dir/chromium/src
 
-echo "=== Install clang + Python 3.10 ==="
+echo "=== Install clang + Python 3.9+ ==="
 apt-get update -qq
-apt-get install -y -qq clang lld python3.10 2>/dev/null || true
-update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 2 2>/dev/null || true
+apt-get install -y -qq clang lld 2>/dev/null || true
 which clang++ && clang++ --version
+
+# Python 3.9+ needed for Chromium 143 build
+python3 --version
+apt-get install -y -qq software-properties-common 2>/dev/null || true
+add-apt-repository -y ppa:deadsnakes/ppa 2>/dev/null || true
+apt-get update -qq 2>/dev/null || true
+apt-get install -y -qq python3.10 2>/dev/null || apt-get install -y -qq python3.9 2>/dev/null || true
+if command -v python3.10 &>/dev/null; then
+  update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 2
+elif command -v python3.9 &>/dev/null; then
+  update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.9 2
+fi
 python3 --version
 
 echo "=== Download Chromium clang toolchain ==="
