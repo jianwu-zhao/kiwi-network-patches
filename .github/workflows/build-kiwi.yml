@@ -64,132 +64,85 @@ jobs:
       - name: Pull image
         run: docker pull uazo/chromium:143.0.7499.193
 
-      - name: Check source tree
+      - name: Full build (find tools, apply patches, gn gen, ninja)
+        timeout-minutes: 300
         run: |
-          docker run -d --name kb uazo/chromium:143.0.7499.193 tail -f /dev/null
-          echo "=== Source locations ==="
-          docker exec kb ls -la /home/lg/ 2>&1
-          echo "=== kiwi-src ==="
-          docker exec kb ls /home/lg/kiwi-src/ 2>&1 | head -10
-          echo "=== working_dir ==="
-          docker exec kb ls /home/lg/working_dir/ 2>&1 | head -10
-          echo "=== gn location ==="
-          docker exec kb find /home/lg -name "gn" -type f 2>/dev/null | head -5
-          docker exec kb find /home/lg -name "ninja" -type f 2>/dev/null | head -5
-          echo "=== build tools ==="
-          docker exec kb ls /home/lg/.caspide/ 2>/dev/null || echo "no .caspide"
-          docker exec kb ls /home/lg/chromium/src/buildtools/ 2>/dev/null | head -5 || echo "no buildtools"
-          docker rm -f kb
-
-      - name: Apply patches & gn gen
-        run: |
-          docker exec kb bash -c '
-            cd /home/lg/kiwi-src
-            echo "=== Applying patches ==="
-            for pf in /tmp/p/*.patch; do
-              [ -f "$pf" ] || continue
-              patch -p1 --force < "$pf" 2>&1 | tail -3 && echo "OK $(basename $pf)" || echo "SKIP $(basename $pf)"
-            done
-            echo "=== Copy kiwi files ==="
-            mkdir -p net/kiwi/unittests
-            cp /tmp/p/ech_kyber_integration/*.cc net/kiwi/ 2>/dev/null || echo "no .cc files"
-            cp /tmp/p/ech_kyber_integration/*.h net/kiwi/ 2>/dev/null || echo "no .h files"
-            cp /tmp/p/ech_kyber_integration/BUILD.gn net/kiwi/ 2>/dev/null || echo "no BUILD.gn"
-            echo "=== Sed integrations ==="
-            grep -q "kiwi_ssl_config" net/socket/ssl_client_socket.cc 2>/dev/null || sed -i "/#include \"net\/ssl\/ssl_config\"/a #include \"net\/kiwi\/kiwi_ssl_config.h\"" net/socket/ssl_client_socket.cc 2>/dev/null || echo "sed ssl failed"
-            grep -q "ConfigureKiwiSSL" net/socket/ssl_client_socket.cc 2>/dev/null || sed -i "/SSL_set_connect_state(ssl_.get())/a \/\/ Kiwi SSL\n  ConfigureKiwiSSL(ssl_.get(), ssl_ctx_.get(), ssl_config_);" net/socket/ssl_client_socket.cc 2>/dev/null || echo "sed ssl2 failed"
-            grep -q "kiwi_dns_handler" net/dns/host_resolver_manager.cc 2>/dev/null || sed -i "/#include \"net\/dns\/host_resolver_manager.h\"/a #include \"net\/kiwi\/kiwi_dns_handler.h\"" net/dns/host_resolver_manager.cc 2>/dev/null || echo "sed dns failed"
-            grep -q "kiwi_url_request" net/url_request/url_request_http_job.cc 2>/dev/null || sed -i "/#include \"net\/url_request\/url_request_http_job.h\"/a #include \"net\/kiwi\/kiwi_url_request.h\"" net/url_request/url_request_http_job.cc 2>/dev/null || echo "sed url failed"
-            grep -q "kiwi_system_net" chrome/browser/net/system_network_context_manager.cc 2>/dev/null || sed -i "/#include \"chrome\/browser\/net\/system_network_context_manager.h\"/a #include \"net\/kiwi\/kiwi_system_net.h\"" chrome/browser/net/system_network_context_manager.cc 2>/dev/null || echo "sed sys failed"
-            sed -i "s/base::FEATURE_DISABLED_BY_DEFAULT};$/base::FEATURE_ENABLED_BY_DEFAULT};/g" net/base/features.cc 2>/dev/null || echo "sed feat failed"
-            echo "=== Patch done ==="
-          '
-          docker rm -f kb
-
-      - name: Find gn/ninja
-        run: |
-          docker run --rm uazo/chromium:143.0.7499.193 bash -c '
-            echo "=== Find in /home/lg ==="
-            find /home/lg -name "gn" -type f 2>/dev/null
-            find /home/lg -name "ninja" -type f 2>/dev/null
-            echo "=== Find in PATH ==="
-            which gn ninja 2>&1
-            echo "=== Find in /usr ==="
-            find /usr -name "gn" -type f 2>/dev/null | head -5
-            find /usr -name "ninja" -type f 2>/dev/null | head -5
-            echo "=== caspide ==="
-            ls /home/lg/.caspide/ 2>/dev/null || echo "no .caspide"
-            find /home/lg/.caspide -name "gn" 2>/dev/null | head -5
-            echo "=== chromium buildtools ==="
-            ls /home/lg/chromium/src/buildtools/linux64/ 2>/dev/null | head -5
-            ls /home/lg/chromium/src/third_party/llvm-build/Release+Asserts/bin/ 2>/dev/null | head -5
-          '
-
-      - name: GN Gen & Ninja build
-        timeout-minutes: 180
-        run: |
-          # Start container with patches volume
+          set -ex
+          # Start container
           docker run -d --name kb -v "$PWD/patches:/tmp/p:ro" uazo/chromium:143.0.7499.193 tail -f /dev/null
 
-          # Apply patches
-          docker exec kb bash -c '
+          # Step 1: Check what's in the image
+          echo "=== Source locations ==="
+          docker exec kb ls /home/lg/ 2>&1
+          docker exec kb ls /home/lg/kiwi-src/ 2>&1 | head -5
+          docker exec kb ls /home/lg/working_dir/ 2>&1 | head -5
+
+          # Step 2: Find gn and ninja (search everywhere)
+          echo "=== Finding build tools ==="
+          GN_PATH=$(docker exec kb find /home/lg /usr /opt -name "gn" -type f 2>/dev/null | head -1)
+          NINJA_PATH=$(docker exec kb find /home/lg /usr /opt -name "ninja" -type f 2>/dev/null | head -1)
+          echo "gn=$GN_PATH ninja=$NINJA_PATH"
+
+          # Step 3: If not found, install as root
+          if [ -z "$GN_PATH" ] || [ -z "$NINJA_PATH" ]; then
+            echo "=== Installing missing tools as root ==="
+            docker exec -u root kb bash -c '
+              apt-get update -qq
+              apt-get install -y -qq ninja-build curl unzip 2>/dev/null
+              cd /tmp
+              curl -sL "https://chrome-infra-packages.appspot.com/dl/gn/gn/linux-amd64/+/latest" -o gn.zip
+              unzip -o gn.zip
+              chmod +x gn
+              cp gn /usr/local/bin/
+            '
+            GN_PATH=$(docker exec kb which gn 2>/dev/null || echo "/usr/local/bin/gn")
+            NINJA_PATH=$(docker exec kb which ninja 2>/dev/null || echo "/usr/bin/ninja")
+          fi
+          echo "Using: gn=$GN_PATH ninja=$NINJA_PATH"
+          docker exec kb "$GN_PATH" --version
+          docker exec kb "$NINJA_PATH" --version
+
+          # Step 4: Apply patches
+          echo "=== Applying patches ==="
+          docker exec kb bash -c "
             cd /home/lg/kiwi-src
-            echo "=== Applying patches ==="
             for pf in /tmp/p/*.patch; do
-              [ -f "$pf" ] || continue
-              patch -p1 --force < "$pf" 2>&1 | tail -2
+              [ -f \"\$pf\" ] || continue
+              patch -p1 --force < \"\$pf\" 2>&1 | tail -2 && echo \"OK \$(basename \$pf)\" || echo \"SKIP \$(basename \$pf)\"
             done
-            echo "=== Copy kiwi files ==="
             mkdir -p net/kiwi/unittests
             cp /tmp/p/ech_kyber_integration/*.cc net/kiwi/ 2>/dev/null || true
             cp /tmp/p/ech_kyber_integration/*.h net/kiwi/ 2>/dev/null || true
             cp /tmp/p/ech_kyber_integration/BUILD.gn net/kiwi/ 2>/dev/null || true
-            echo "=== Patch done ==="
-          '
+            echo '=== Patch done ==='
+          "
 
-          # Find and run gn gen
-          docker exec kb bash -c '
+          # Step 5: Run gn gen
+          echo "=== Running gn gen ==="
+          docker exec kb bash -c "
             cd /home/lg/kiwi-src
-            # Try to find gn
-            GN=$(find /home/lg -name "gn" -type f 2>/dev/null | head -1)
-            if [ -z "$GN" ]; then
-              GN=$(find /usr -name "gn" -type f 2>/dev/null | head -1)
-            fi
-            if [ -z "$GN" ]; then
-              echo "ERROR: gn not found anywhere!"
-              echo "Available in /home/lg:"
-              find /home/lg -maxdepth 3 -type f -executable | head -20
-              exit 1
-            fi
-            echo "Found gn at: $GN"
-            $GN --version
+            $GN_PATH gen out/android --args='target_os=\"android\" target_cpu=\"arm64\" is_debug=false symbol_level=0 is_official_build=true enable_remoting=false enable_nacl=false proprietary_codecs=false ffmpeg_branding=\"Chromium\" enable_quic=true enable_http3=true enable_ech=true enable_quic_connection_migration=true enable_quic_0rtt=true'
+            echo '=== gn gen done ==='
+          "
 
-            # Try to find ninja
-            NINJA=$(find /home/lg -name "ninja" -type f 2>/dev/null | head -1)
-            if [ -z "$NINJA" ]; then
-              NINJA=$(find /usr -name "ninja" -type f 2>/dev/null | head -1)
-            fi
-            if [ -z "$NINJA" ]; then
-              echo "ERROR: ninja not found anywhere!"
-              exit 1
-            fi
-            echo "Found ninja at: $NINJA"
-            $NINJA --version
+          # Step 6: Run ninja
+          echo "=== Running ninja build ==="
+          docker exec kb bash -c "
+            cd /home/lg/kiwi-src
+            $NINJA_PATH -C out/android chrome_public_apk
+            echo '=== ninja done ==='
+            ls -la out/android/apks/ 2>/dev/null || echo 'no apks dir'
+            find out/android -name '*.apk' 2>/dev/null | head -5
+          "
 
-            # Run gn gen
-            $GN gen out/android --args="target_os=\"android\" target_cpu=\"arm64\" is_debug=false symbol_level=0 is_official_build=true enable_remoting=false enable_nacl=false proprietary_codecs=false ffmpeg_branding=\"Chromium\" enable_quic=true enable_http3=true enable_ech=true enable_quic_connection_migration=true enable_quic_0rtt=true"
-            echo "=== gn gen done ==="
-
-            # Run ninja
-            $NINJA -C out/android chrome_public_apk
-            echo "=== ninja done ==="
-            ls -la out/android/apks/ 2>/dev/null || echo "no apks dir"
-          '
-
-          # Extract APK
+          # Step 7: Extract APK
+          echo "=== Extracting APK ==="
           mkdir -p apk-output
           docker cp kb:/home/lg/kiwi-src/out/android/apks/ apk-output/ 2>/dev/null || true
           find apk-output/ -name "*.apk" -exec ls -lh {} \;
+
+          # Cleanup
+          docker rm -f kb
 
       - name: Upload APK
         if: always()
