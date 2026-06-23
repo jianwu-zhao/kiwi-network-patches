@@ -79,45 +79,47 @@ jobs:
             ls .gn 2>/dev/null && echo "OK" || echo ".gn missing - this is an issue"
           '
 
-      - name: Copy Kiwi patches into container & GN Gen
+      - name: Prepare build script
         run: |
-          # Copy patches into a data volume, then run gn gen
-          docker run --rm \
-            -v $PWD/patches/ech_kyber_integration:/tmp/patches \
-            uazo/chromium:143.0.7499.193 bash -c '
-            set -e
-            cd /home/lg/working_dir
-            # Copy Kiwi files into source tree
-            mkdir -p net/kiwi/
-            cp /tmp/patches/*.cc net/kiwi/ 2>/dev/null || true
-            cp /tmp/patches/*.h  net/kiwi/ 2>/dev/null || true
-            cp /tmp/patches/BUILD.gn net/kiwi/ 2>/dev/null || true
-            echo "=== Kiwi files ==="
-            ls -la net/kiwi/
-            echo "=== GN Gen (Android arm64) ==="
-            gn gen out/Default --args='\''target_os="android" target_cpu="arm64" is_debug=false symbol_level=0'\''
-          '
+          cat > /tmp/build_kiwi.sh << 'SCRIPT'
+          set -e -x
+          cd /home/lg/working_dir
+          echo "=== Kiwi files before copy ==="
+          ls -la net/kiwi/ 2>/dev/null || echo "no net/kiwi/ yet"
+          mkdir -p net/kiwi/
+          cp /tmp/patches/*.cc net/kiwi/ 2>/dev/null || echo "no .cc files"
+          cp /tmp/patches/*.h  net/kiwi/ 2>/dev/null || echo "no .h files"
+          cp /tmp/patches/BUILD.gn net/kiwi/ 2>/dev/null || echo "no BUILD.gn"
+          echo "=== Kiwi files ==="
+          ls -la net/kiwi/
+          echo "=== GN Gen ==="
+          gn gen out/Default --args='target_os="android" target_cpu="arm64" is_debug=false symbol_level=0'
+          echo "=== GN Gen done ==="
+          ls out/Default/
+          SCRIPT
+          chmod +x /tmp/build_kiwi.sh
 
-      - name: Ninja build (net module)
+      - name: Run build inside container
         run: |
-          docker run --rm \
+          docker run --name kiwi-builder \
             -v $PWD/patches/ech_kyber_integration:/tmp/patches \
-            uazo/chromium:143.0.7499.193 bash -c '
-            set -e
-            cd /home/lg/working_dir
-            echo "=== Build net module ==="
-            ninja -C out/Default net 2>&1 | tail -30
-          '
+            -v /tmp/build_kiwi.sh:/tmp/build_kiwi.sh:ro \
+            uazo/chromium:143.0.7499.193 \
+            bash /tmp/build_kiwi.sh
+
+      - name: Ninja build
+        run: |
+          docker start kiwi-builder 2>/dev/null || true
+          docker exec kiwi-builder bash -c 'cd /home/lg/working_dir && ninja -C out/Default net' | tail -30
 
       - name: Collect artifacts
         if: always()
         run: |
           mkdir -p build-output
-          cid=$(docker create kiwi-builder)
-          docker cp $cid:/home/lg/working_dir/out/Default/obj/net/kiwi build-output/ 2>/dev/null || true
-          docker cp $cid:/home/lg/working_dir/out/Default/obj/net/kiwi_network build-output/ 2>/dev/null || true
-          docker rm $cid
-          find build-output/ -name '*.o' -o -name '*.a' | head -20
+          docker cp kiwi-builder:/home/lg/working_dir/out/Default/obj/net/kiwi build-output/ 2>/dev/null || true
+          docker cp kiwi-builder:/home/lg/working_dir/out/Default/obj/net/kiwi_network build-output/ 2>/dev/null || true
+          docker rm -f kiwi-builder 2>/dev/null || true
+          find build-output/ -name '*.o' -o -name '*.a' | head -10
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -161,10 +163,28 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends libc++-dev libc++abi-dev
 
-      - name: Compile with clang++ (verbose)
+      - name: Find libc++ headers
+        run: |
+          echo "=== clang include paths ==="
+          clang++ -std=c++20 -stdlib=libc++ -v -E -x c++ /dev/null 2>&1 | grep -E "^" | head -20
+          echo "=== Locate libc++ headers ==="
+          dpkg -L libc++-dev 2>/dev/null | grep -E "include.*c\+\+" | head -5
+          dpkg -L libc++abi-dev 2>/dev/null | grep -E "include.*c\+\+" | head -5
+          echo "=== Check /usr/include/c++/v1/ ==="
+          ls /usr/include/c++/v1/ 2>/dev/null | head -5 || echo "not found"
+
+      - name: Compile with clang++ and libc++
         run: |
           cd chromium-src
           mkdir -p out/verify
+          # Find C++ headers path
+          LIBCXX_INC="/usr/include/c++/v1"
+          if [ ! -d "$LIBCXX_INC" ]; then
+            echo "libc++ headers not found, falling back to libstdc++"
+            CXX="clang++ -std=c++20 -fPIC -O2"
+          else
+            CXX="clang++ -std=c++20 -fPIC -O2 -stdlib=libc++ -nostdinc++ -cxx-isystem $LIBCXX_INC"
+          fi
           INCS="-I. -Inet -Ibase -Ibuild -Ibuild_overrides"
           INCS="$INCS -Ithird_party/boringssl/src/include"
           INCS="$INCS -Ithird_party/zlib -Iurl -Icrypto"
@@ -173,34 +193,30 @@ jobs:
           INCS="$INCS -Ithird_party/partition_alloc"
           DEFS="-DNET_IMPLEMENTATION=1 -DBORINGSSL_IMPLEMENTATION=1"
           DEFS="$DEFS -DOPENSSL_IS_BORINGSSL=1"
-          CXX="clang++ -std=c++20 -fPIC -O2 -stdlib=libc++ -v"
 
-          FIRST_FAIL=""
-          PASS=0
-          FAIL=0
+          PASS=0; FAIL=0
           for f in net/kiwi/*.cc; do
             base=$(basename $f .cc)
             if [ "$base" = "mojo_ipc_integration" ]; then
               echo "$base.cc ... SKIP (needs mojom headers)"
               continue
             fi
-            echo "=== $base.cc ==="
+            echo -n "$base.cc ... "
             LOG="/tmp/$base.err"
             if $CXX -c "$f" $INCS $DEFS -o out/verify/$base.o 2>$LOG; then
-              echo "  -> OK"
-              PASS=$((PASS+1))
+              echo "OK"; PASS=$((PASS+1))
             else
-              echo "  -> FAIL"
-              head -5 $LOG
-              echo "  ... $(wc -l < $LOG) total errors"
+              echo "FAIL"
+              head -3 $LOG
               FAIL=$((FAIL+1))
-              [ -z "$FIRST_FAIL" ] && FIRST_FAIL="$base"
             fi
           done
           echo "Result: $PASS passed, $FAIL failed"
-          # Show first full error log for debugging
-          if [ -n "$FIRST_FAIL" ]; then
-            echo "=== First failure ($FIRST_FAIL) full log ==="
-            head -30 /tmp/$FIRST_FAIL.err
+          if [ $FAIL -gt 0 ]; then
+            echo "=== First error details ==="
+            for f in net/kiwi/*.cc; do
+              base=$(basename $f .cc)
+              [ -f "/tmp/$base.err" ] && head -15 /tmp/$base.err && break
+            done
           fi
           exit $FAIL
