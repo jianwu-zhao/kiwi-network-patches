@@ -3,76 +3,68 @@ name: Verify Kiwi Network Patches
 on:
   workflow_dispatch:
   push:
-    branches: [ main, kiwi ]
+    branches: [main, kiwi]
 
 env:
   CHROMIUM_SRC: ${{ github.workspace }}/src
   PATCH_DIR: ${{ github.workspace }}/patches
 
 jobs:
+  # -----------------------------------------------------------
+  # Step 1: verify patch file structure
+  # -----------------------------------------------------------
   verify_patches:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout patches
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           path: patches
 
-      - name: Install system deps
-        run: |
+      - run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends python3 curl git
 
       - name: Clone Kiwi source (shallow)
         run: |
           git clone --depth=1 -b kiwi https://github.com/kiwibrowser/src.next.git $CHROMIUM_SRC
-          echo "HEAD: $(git log --oneline -1)"
 
       - name: Apply patches
         run: |
-          cd $CHROMIUM_SRC
-          mkdir -p net/kiwi/
-          cp $PATCH_DIR/ech_kyber_integration/*.cc $PATCH_DIR/ech_kyber_integration/*.h net/kiwi/
-          echo "Kiwi files: $(ls net/kiwi/ | wc -l)"
+          mkdir -p $CHROMIUM_SRC/net/kiwi/
+          cp $PATCH_DIR/ech_kyber_integration/*.cc $CHROMIUM_SRC/net/kiwi/
+          cp $PATCH_DIR/ech_kyber_integration/*.h  $CHROMIUM_SRC/net/kiwi/
+          echo "Patched files: $(ls $CHROMIUM_SRC/net/kiwi/ | wc -l)"
 
-      - name: Verify patch files
+      - name: Verify patch existence
         run: |
-          echo "CC: $(ls $PATCH_DIR/ech_kyber_integration/*.cc 2>/dev/null | wc -l)"
-          echo "H:  $(ls $PATCH_DIR/ech_kyber_integration/*.h 2>/dev/null | wc -l)"
-          echo "GN: $(ls $PATCH_DIR/ech_kyber_integration/BUILD.gn 2>/dev/null)"
+          echo "CC files: $(ls $PATCH_DIR/ech_kyber_integration/*.cc 2>/dev/null | wc -l)"
+          echo "H  files: $(ls $PATCH_DIR/ech_kyber_integration/*.h 2>/dev/null | wc -l)"
+          echo "BUILD.gn: $(ls $PATCH_DIR/ech_kyber_integration/BUILD.gn 2>/dev/null)"
           python3 $PATCH_DIR/.github/scripts/verify_build_gn.py
 
-      - name: Summary
-        run: |
-          echo "=== Patch Summary ==="
-          echo "Patch files: $(ls $PATCH_DIR/ech_kyber_integration/*.cc 2>/dev/null | wc -l) .cc"
-          echo "             $(ls $PATCH_DIR/ech_kyber_integration/*.h 2>/dev/null | wc -l) .h"
-
   # -----------------------------------------------------------
-  # Full Android build using uazo's Chromium Docker image
+  # Step 2: full Android build inside uazo's Chromium Docker image
   # -----------------------------------------------------------
   compile_android:
     needs: [verify_patches]
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout patches
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           path: patches
 
       - name: Free disk space
         run: |
-          sudo rm -rf /opt/hostedtoolcache /usr/share/dotnet /usr/local/lib/android 2>/dev/null
-          echo "Free space: $(df -h / | tail -1 | awk '{print $4}')"
+          sudo rm -rf /opt/hostedtoolcache /usr/share/dotnet /usr/local/lib/android
 
       - name: Pull Chromium build image
         run: |
           docker pull uazo/chromium:143.0.7499.193
-          docker images --format "table {{.Repository}}:{{.Tag}}  {{.Size}}"
 
-      - name: Build patched image
+      - name: Inject Kiwi patches into image
         run: |
-          cat > Dockerfile << 'DF'
+          # Build a derived image with Kiwi patches copied in
+          cat > Dockerfile << 'DOCKERFILE'
 FROM uazo/chromium:143.0.7499.193
 USER root
 RUN mkdir -p /home/lg/working_dir/net/kiwi
@@ -82,44 +74,32 @@ COPY patches/ech_kyber_integration/BUILD.gn /home/lg/working_dir/net/kiwi/
 RUN chown -R lg:lg /home/lg/working_dir/net/kiwi
 USER lg
 WORKDIR /home/lg/working_dir
-DF
+DOCKERFILE
           docker build -t kiwi-builder .
 
-      - name: Build Kiwi net module (Android arm64)
+      - name: GN Gen & Ninja build (Android arm64)
         run: |
-          docker run --rm kiwi-builder bash -c '
-            set -e -x
-            cd /home/lg/working_dir
-            echo "=== Kiwi files ==="
+          docker run --rm kiwi-builder bash -c "
+            set -e
+            echo '=== Kiwi files ==='
             ls -la net/kiwi/
-            echo "=== GN Gen ==="
-            gn gen out/Default --args="
-              target_os=\"android\"
-              target_cpu=\"arm64\"
-              is_debug=false
-              symbol_level=0
-              is_official_build=true
-              enable_remoting=false
-              enable_nacl=false
-              proprietary_codecs=false
-              ffmpeg_branding=\"Chromium\"
-            "
-            echo "=== Build net target ==="
-            ninja -C out/Default net 2>&1 | tail -30
-          '
+            echo '=== GN Gen ==='
+            gn gen out/Default --args='target_os=\"android\" target_cpu=\"arm64\" is_debug=false symbol_level=0 is_official_build=true enable_remoting=false enable_nacl=false proprietary_codecs=false ffmpeg_branding=\"Chromium\"'
+            echo '=== Build net target ==='
+            ninja -C out/Default net
+          "
 
-      - name: Collect build artifacts
+      - name: Collect artifacts
         if: always()
         run: |
-          echo "=== Collecting artifacts ==="
           mkdir -p build-output
-          docker create --name kiwi-tmp kiwi-builder
-          docker cp kiwi-tmp:/home/lg/working_dir/out/Default/obj/net/kiwi build-output/ 2>/dev/null || true
-          docker cp kiwi-tmp:/home/lg/working_dir/out/Default/obj/net/kiwi_network build-output/ 2>/dev/null || true
-          docker rm kiwi-tmp
-          find build-output/ -type f -name "*.o" -o -name "*.a" 2>/dev/null | head -20
+          cid=$(docker create kiwi-builder)
+          docker cp $cid:/home/lg/working_dir/out/Default/obj/net/kiwi build-output/ 2>/dev/null || true
+          docker cp $cid:/home/lg/working_dir/out/Default/obj/net/kiwi_network build-output/ 2>/dev/null || true
+          docker rm $cid
+          find build-output/ -name '*.o' -o -name '*.a' | head -20
 
-      - name: Upload build artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: android-arm64-build
@@ -127,14 +107,13 @@ DF
           if-no-files-found: warn
 
   # -----------------------------------------------------------
-  # Quick verification: compile .cc files with g++ on Ubuntu
+  # Step 3: quick g++ syntax verification on ubuntu-latest
   # -----------------------------------------------------------
   verify_compilation:
     needs: [verify_patches]
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout patches
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           path: patches
 
@@ -150,7 +129,6 @@ DF
             third_party/perfetto/ third_party/googletest/ \
             third_party/partition_alloc/
           git checkout
-          du -sh .
 
       - name: Copy Kiwi files
         run: |
@@ -158,7 +136,6 @@ DF
           cp patches/ech_kyber_integration/*.cc chromium-src/net/kiwi/
           cp patches/ech_kyber_integration/*.h chromium-src/net/kiwi/
           cp patches/ech_kyber_integration/BUILD.gn chromium-src/net/kiwi/
-          echo "Files: $(ls chromium-src/net/kiwi/ | wc -l)"
 
       - name: Compile with g++
         run: |
@@ -174,20 +151,27 @@ DF
           DEFS="$DEFS -DOPENSSL_IS_BORINGSSL=1"
           CXX="g++ -std=c++20 -fPIC -O2 -include /usr/include/features.h -D_GNU_SOURCE"
 
-          PASS=0; FAIL=0
+          PASS=0
+          FAIL=0
           for f in net/kiwi/*.cc; do
             base=$(basename $f .cc)
-            [ "$base" = "mojo_ipc_integration" ] && continue
+            if [ "$base" = "mojo_ipc_integration" ]; then
+              echo "$base.cc ... SKIP (needs mojom headers)"
+              continue
+            fi
             echo -n "$base.cc ... "
             if $CXX -c "$f" $INCS $DEFS -o out/verify/$base.o 2>/dev/null; then
-              echo "OK"; PASS=$((PASS+1))
+              echo OK
+              PASS=$((PASS+1))
             else
-              echo "FAIL"; FAIL=$((FAIL+1))
+              echo FAIL
+              FAIL=$((FAIL+1))
             fi
           done
           echo "Result: $PASS passed, $FAIL failed"
           if [ $FAIL -eq 0 ]; then
             ar rcs out/verify/libkiwi_network.a out/verify/*.o
-            echo "libkiwi_network.a: $(ls -lh out/verify/libkiwi_network.a | awk '\''{print $5}'\'')"
+            size=$(stat --format=%s out/verify/libkiwi_network.a)
+            echo "libkiwi_network.a: $size bytes"
           fi
           exit $FAIL
