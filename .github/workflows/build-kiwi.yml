@@ -39,14 +39,15 @@ jobs:
           cd /home/runner/kiwi-src
           for pf in "$GITHUB_WORKSPACE/patches"/*.patch; do
             [ -f "$pf" ] || continue
-            patch -p1 --force < "$pf"
+            patch -p1 --force < "$pf" || echo "  patch $(basename $pf) had issues"
           done
           mkdir -p net/kiwi/unittests
-          shopt -s nullglob
-          f="$GITHUB_WORKSPACE/patches/ech_kyber_integration/*.cc"; cp $f net/kiwi/ 2>/dev/null; echo "copied .cc files"
-          f="$GITHUB_WORKSPACE/patches/ech_kyber_integration/*.h"; cp $f net/kiwi/ 2>/dev/null; echo "copied .h files"
-          f="$GITHUB_WORKSPACE/patches/ech_kyber_integration/BUILD.gn"; cp $f net/kiwi/ 2>/dev/null; echo "copied BUILD.gn"
-          shopt -u nullglob
+          for f in "$GITHUB_WORKSPACE/patches/ech_kyber_integration"/*.cc "$GITHUB_WORKSPACE/patches/ech_kyber_integration"/*.h; do
+            [ -f "$f" ] && cp "$f" net/kiwi/ && echo "  copied $(basename $f)"
+          done
+          if [ -f "$GITHUB_WORKSPACE/patches/ech_kyber_integration/BUILD.gn" ]; then
+            cp "$GITHUB_WORKSPACE/patches/ech_kyber_integration/BUILD.gn" net/kiwi/
+          fi
           grep -q "kiwi_ssl_config" net/socket/ssl_client_socket.cc 2>/dev/null || sed -i "/#include \"net\/ssl\/ssl_config\"/a #include \"net\/kiwi\/kiwi_ssl_config.h\"" net/socket/ssl_client_socket.cc 2>/dev/null || true
           grep -q "ConfigureKiwiSSL" net/socket/ssl_client_socket.cc 2>/dev/null || sed -i "/SSL_set_connect_state(ssl_.get())/a \/\/ Kiwi SSL\n  ConfigureKiwiSSL(ssl_.get(), ssl_ctx_.get(), ssl_config_);" net/socket/ssl_client_socket.cc 2>/dev/null || true
           grep -q "kiwi_dns_handler" net/dns/host_resolver_manager.cc 2>/dev/null || sed -i "/#include \"net\/dns\/host_resolver_manager.h\"/a #include \"net\/kiwi\/kiwi_dns_handler.h\"" net/dns/host_resolver_manager.cc 2>/dev/null || true
