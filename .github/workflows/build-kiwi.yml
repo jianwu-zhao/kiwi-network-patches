@@ -23,16 +23,23 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq ninja-build curl unzip python3-pip
 
-      - name: Clone Kiwi source (shallow)
+      - name: Clone Kiwi source
         run: |
-          git clone --depth=1 -b kiwi https://github.com/kiwibrowser/src.next.git /home/runner/kiwi-src 2>&1 | tail -5
+          rm -rf /home/runner/kiwi-src
+          git clone --depth=1 -b kiwi https://github.com/kiwibrowser/src.next.git /home/runner/kiwi-src
+
+      - name: Verify clone
+        run: |
+          ls /home/runner/kiwi-src/build/install-build-deps.sh && echo "FOUND install-build-deps.sh"
+          ls /home/runner/kiwi-src/net/BUILD.gn && echo "FOUND net/BUILD.gn"
+          du -sh /home/runner/kiwi-src 2>/dev/null || echo "size check failed"
 
       - name: Apply patches
         run: |
           cd /home/runner/kiwi-src
           for pf in "$GITHUB_WORKSPACE/patches"/*.patch; do
             [ -f "$pf" ] || continue
-            patch -p1 --force < "$pf" 2>&1 | tail -2
+            patch -p1 --force < "$pf"
           done
           mkdir -p net/kiwi/unittests
           cp "$GITHUB_WORKSPACE/patches"/ech_kyber_integration/*.cc net/kiwi/ 2>/dev/null || true
@@ -44,28 +51,25 @@ jobs:
           grep -q "kiwi_url_request" net/url_request/url_request_http_job.cc 2>/dev/null || sed -i "/#include \"net\/url_request\/url_request_http_job.h\"/a #include \"net\/kiwi\/kiwi_url_request.h\"" net/url_request/url_request_http_job.cc 2>/dev/null || true
           grep -q "kiwi_system_net" chrome/browser/net/system_network_context_manager.cc 2>/dev/null || sed -i "/#include \"chrome\/browser\/net\/system_network_context_manager.h\"/a #include \"net\/kiwi\/kiwi_system_net.h\"" chrome/browser/net/system_network_context_manager.cc 2>/dev/null || true
           sed -i "s/base::FEATURE_DISABLED_BY_DEFAULT};$/base::FEATURE_ENABLED_BY_DEFAULT};/g" net/base/features.cc 2>/dev/null || true
-          echo "Patches applied"
+          echo "=== Patches applied ==="
 
       - name: Install Chromium build deps
         run: |
           cd /home/runner/kiwi-src
-          sudo ./build/install-build-deps.sh --android --no-prompt 2>&1 | tail -10 || echo "install-build-deps had issues (continuing)"
+          sudo ./build/install-build-deps.sh --android --no-prompt
 
       - name: Get Clang toolchain
         run: |
           cd /home/runner/kiwi-src
-          python3 tools/clang/scripts/update.py 2>&1 | tail -5 || echo "clang update had issues"
-          echo "clang++ at:"
-          ls -la third_party/llvm-build/Release+Asserts/bin/clang++ 2>/dev/null || echo "not found"
+          python3 tools/clang/scripts/update.py
+          ls -la third_party/llvm-build/Release+Asserts/bin/clang++
 
       - name: Install gn
         run: |
-          # Check if gn is already available
-          if which gn 2>/dev/null; then
+          if which gn; then
             echo "gn already installed: $(gn --version)"
             exit 0
           fi
-          # Try to find in source tree
           if [ -f /home/runner/kiwi-src/buildtools/linux64/gn ]; then
             echo "Found gn in buildtools:"
             /home/runner/kiwi-src/buildtools/linux64/gn --version
@@ -73,56 +77,37 @@ jobs:
             exit 0
           fi
           # Download from CIPD
-          echo "Downloading gn from CIPD..."
           mkdir -p /tmp/gn-install
           curl -sL --max-time 30 "https://chrome-infra-packages.appspot.com/dl/gn/gn/linux-amd64/+/latest" -o /tmp/gn-install/gn.zip
-          if [ $? -eq 0 ] && [ -s /tmp/gn-install/gn.zip ]; then
-            (cd /tmp/gn-install && unzip -o gn.zip 2>/dev/null) && \
-            chmod +x /tmp/gn-install/gn && \
-            sudo cp /tmp/gn-install/gn /usr/local/bin/ && \
-            echo "gn installed from CIPD" && \
-            gn --version && exit 0
+          if [ -s /tmp/gn-install/gn.zip ]; then
+            (cd /tmp/gn-install && unzip -o gn.zip)
+            sudo cp /tmp/gn-install/gn /usr/local/bin/
+            gn --version
+            exit 0
           fi
           # Build from source
-          echo "Building gn from source..."
           cd /home/runner/kiwi-src/tools/gn
-          if [ -f bootstrap.py ]; then
-            python3 bootstrap.py 2>&1 | tail -10
-            if [ -f out/gn ]; then
-              sudo cp out/gn /usr/local/bin/
-              echo "gn built from source"
-              gn --version
-              exit 0
-            fi
-          fi
-          echo "FAILED: gn not available after all attempts"
-          ls /home/runner/kiwi-src/buildtools/linux64/ 2>/dev/null || echo "no buildtools/linux64"
-          exit 1
+          python3 bootstrap.py
+          sudo cp out/gn /usr/local/bin/
+          gn --version
 
       - name: GN Gen
         run: |
           cd /home/runner/kiwi-src
-          GN=$(which gn 2>/dev/null)
-          if [ -z "$GN" ]; then
-            echo "FATAL: gn not found!"
-            exit 1
-          fi
-          echo "Using: $GN ($($GN --version 2>/dev/null))"
-          $GN gen out/android --args='target_os="android" target_cpu="arm64" is_debug=false symbol_level=0 is_official_build=true enable_remoting=false enable_nacl=false proprietary_codecs=false ffmpeg_branding="Chromium" enable_quic=true enable_http3=true enable_ech=true enable_quic_connection_migration=true enable_quic_0rtt=true'
-          echo "gn gen exit code: $?"
+          gn gen out/android --args='target_os="android" target_cpu="arm64" is_debug=false symbol_level=0 is_official_build=true enable_remoting=false enable_nacl=false proprietary_codecs=false ffmpeg_branding="Chromium" enable_quic=true enable_http3=true enable_ech=true enable_quic_connection_migration=true enable_quic_0rtt=true'
 
       - name: Ninja build
         timeout-minutes: 180
         run: |
           cd /home/runner/kiwi-src
-          ninja -C out/android chrome_public_apk 2>&1
+          ninja -C out/android chrome_public_apk
 
       - name: Extract APK
         if: always()
         run: |
           mkdir -p apk-output
-          find /home/runner/kiwi-src/out/android -name "*.apk" -exec cp {} apk-output/ \; 2>/dev/null || true
-          ls -lh apk-output/ 2>/dev/null || echo "no APK files"
+          find /home/runner/kiwi-src/out/android -name "*.apk" -exec cp {} apk-output/ \;
+          ls -lh apk-output/ || echo "no APK files"
 
       - name: Upload APK
         if: always()
