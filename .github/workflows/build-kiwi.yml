@@ -23,6 +23,17 @@ jobs:
           ref: kiwi
           path: kiwi-src
           fetch-depth: 1
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify Kiwi source
+        run: |
+          echo "Checking kiwi-src contents..."
+          ls -la ${{ github.workspace }}/kiwi-src/ 2>&1 | head -10
+          echo "---"
+          ls ${{ github.workspace }}/kiwi-src/build/install-build-deps.sh 2>&1 || echo "MISSING: install-build-deps.sh"
+          ls ${{ github.workspace }}/kiwi-src/net/BUILD.gn 2>&1 || echo "MISSING: net/BUILD.gn"
+          echo "---"
+          du -sh ${{ github.workspace }}/kiwi-src 2>&1
 
       - name: Free disk
         run: |
