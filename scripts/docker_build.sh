@@ -8,6 +8,11 @@ echo "=== Install clang ==="
 apt-get update -qq && apt-get install -y -qq clang lld 2>/dev/null
 which clang++ && clang++ --version
 
+echo "=== Download Chromium clang toolchain ==="
+cd "$SRC"
+python3 tools/clang/scripts/update.py 2>&1
+ls third_party/llvm-build/Release+Asserts/cr_build_revision
+
 echo "=== Apply patches ==="
 cd "$SRC"
 for f in /tmp/p/*.patch; do
