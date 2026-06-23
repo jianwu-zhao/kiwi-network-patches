@@ -15,7 +15,7 @@ jobs:
         run: |
           docker pull uazo/chromium:143.0.7499.193
 
-          # Dump everything to a file
+          # Run diagnostics and save to file (don't let failures stop us)
           docker run --rm uazo/chromium:143.0.7499.193 bash -c '
             echo "===== WHOAMI ====="
             whoami
@@ -62,9 +62,10 @@ jobs:
             echo ""
             echo "===== env ====="
             env | sort
-          ' > /tmp/diag_output.txt
+          ' 2>&1 | tee /tmp/diag_output.txt || true
 
-          cat /tmp/diag_output.txt
+          echo "=== Diagnostic output saved ==="
+          wc -l /tmp/diag_output.txt
 
       - name: Upload diagnostic output
         uses: actions/upload-artifact@v4
