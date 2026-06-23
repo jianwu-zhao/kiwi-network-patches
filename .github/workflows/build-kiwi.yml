@@ -33,6 +33,8 @@ jobs:
           mkdir -p $CHROMIUM_SRC/net/kiwi/
           cp $PATCH_DIR/ech_kyber_integration/*.cc $CHROMIUM_SRC/net/kiwi/
           cp $PATCH_DIR/ech_kyber_integration/*.h  $CHROMIUM_SRC/net/kiwi/
+          cp $PATCH_DIR/ech_kyber_integration/BUILD.gn $CHROMIUM_SRC/net/kiwi/
+          cp $PATCH_DIR/ech_kyber_integration/net_base_features.patch $CHROMIUM_SRC/net/base/ 2>/dev/null || true
           echo "Patched files: $(ls $CHROMIUM_SRC/net/kiwi/ | wc -l)"
 
       - name: Verify patch existence
