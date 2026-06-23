@@ -13,12 +13,18 @@ cd "$SRC"
 # list[type] -> typing.List[type]
 for f in $(grep -rls 'list\[' --include='*.py' tools/ third_party/perfetto/ 2>/dev/null); do
   sed -i 's/\blist\[/typing.List[/g' "$f"
-  grep -q '^import typing' "$f" || sed -i '1s/^/import typing\n/' "$f"
+  # Add import typing AFTER any from __future__ imports
+  if grep -q '^from __future__' "$f"; then
+    grep -q '^import typing' "$f" || sed -i '/^from __future__/a import typing' "$f"
+  else
+    grep -q '^import typing' "$f" || sed -i '1s/^/import typing\n/' "$f"
+  fi
 done
-# type | type -> typing.Union[type, type] (Python 3.10+ union syntax)
+# type | type -> typing.Union[type, type]
 for f in $(grep -rls 'from __future__' --include='*.py' tools/ 2>/dev/null); do
-  sed -i 's/\([A-Za-z0-9_]*\) | \([A-Za-z0-9_]*\)/typing.Union[\1, \2]/g' "$f"
-  grep -q '^import typing' "$f" || sed -i '1s/^/import typing\n/' "$f"
+  if grep -q 'typing\.Union\|typing\.List' "$f"; then
+    grep -q '^import typing' "$f" || sed -i '/^from __future__/a import typing' "$f"
+  fi
 done
 echo "Python fixes done"
 
