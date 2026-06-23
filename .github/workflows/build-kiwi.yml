@@ -10,38 +10,27 @@ env:
   PATCH_DIR: ${{ github.workspace }}/patches
 
 jobs:
-  # -----------------------------------------------------------
-  # Verify patch file structure
-  # -----------------------------------------------------------
   verify_patches:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           path: patches
-
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3 curl git
-
-      - name: Clone Kiwi source (shallow)
+      - name: Clone Kiwi source
         run: git clone --depth=1 -b kiwi https://github.com/kiwibrowser/src.next.git $CHROMIUM_SRC
-
       - name: Apply patches
         run: |
           mkdir -p $CHROMIUM_SRC/net/kiwi/
           cp $PATCH_DIR/ech_kyber_integration/*.cc $CHROMIUM_SRC/net/kiwi/
           cp $PATCH_DIR/ech_kyber_integration/*.h  $CHROMIUM_SRC/net/kiwi/
           cp $PATCH_DIR/ech_kyber_integration/BUILD.gn $CHROMIUM_SRC/net/kiwi/
-          echo "Patched: $(ls $CHROMIUM_SRC/net/kiwi/ | wc -l) files"
-
-      - name: Verify patch existence
+      - name: Verify
         run: |
-          echo "CC files: $(ls $PATCH_DIR/ech_kyber_integration/*.cc 2>/dev/null | wc -l)"
-          echo "H  files: $(ls $PATCH_DIR/ech_kyber_integration/*.h 2>/dev/null | wc -l)"
+          echo "CC: $(ls $PATCH_DIR/ech_kyber_integration/*.cc 2>/dev/null | wc -l)"
+          echo "H:  $(ls $PATCH_DIR/ech_kyber_integration/*.h 2>/dev/null | wc -l)"
           python3 $PATCH_DIR/.github/scripts/verify_build_gn.py
 
-  # -----------------------------------------------------------
-  # Full Android build using uazo's Chromium Docker image
-  # -----------------------------------------------------------
   compile_android:
     needs: [verify_patches]
     runs-on: ubuntu-latest
@@ -49,40 +38,24 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: patches
-
-      - name: Free disk space
+      - name: Free disk
         run: sudo rm -rf /opt/hostedtoolcache /usr/share/dotnet /usr/local/lib/android
-
-      - name: Pull Chromium build image
+      - name: Pull image
         run: docker pull uazo/chromium:143.0.7499.193
-
-      - name: Copy patches into container and build
+      - name: Copy patches and build
         run: |
-          # Create container with sleep to keep it running
-          docker run -d --name kiwi-builder \
-            uazo/chromium:143.0.7499.193 \
-            sleep 3600
-
-          # Copy Kiwi patches into the source tree
-          docker exec kiwi-builder mkdir -p /home/lg/working_dir/net/kiwi
-          docker cp patches/ech_kyber_integration/. kiwi-builder:/home/lg/working_dir/net/kiwi/
-
-          # Show copied files
-          docker exec kiwi-builder ls -la /home/lg/working_dir/net/kiwi/
-
-          # GN Gen
-          docker exec kiwi-builder bash -c 'cd /home/lg/working_dir && gn gen out/Default --args="target_os=\"android\" target_cpu=\"arm64\" is_debug=false symbol_level=0"'
-
-          # Ninja build
-          docker exec kiwi-builder bash -c 'cd /home/lg/working_dir && ninja -C out/Default net'
-
-          # Clean up
-          docker rm -f kiwi-builder
-
+          # Use tail -f to keep container running longer
+          docker run -d --name kb uazo/chromium:143.0.7499.193 tail -f /dev/null
+          docker exec kb mkdir -p /home/lg/working_dir/net/kiwi
+          docker cp patches/ech_kyber_integration/. kb:/home/lg/working_dir/net/kiwi/
+          docker exec kb ls -la /home/lg/working_dir/net/kiwi/
+          docker exec kb bash -c "cd /home/lg/working_dir && gn gen out/Default --args=\"target_os=\\\"android\\\" target_cpu=\\\"arm64\\\" is_debug=false symbol_level=0\""
+          docker exec kb bash -c "cd /home/lg/working_dir && ninja -C out/Default net 2>&1 | tail -30"
+          docker rm -f kb
       - name: Upload artifacts
         if: always()
         run: |
-          cid=$(docker ps -aq -f name=kiwi-builder)
+          cid=$(docker ps -aq -f name=kb)
           if [ -n "$cid" ]; then
             mkdir -p build-output
             docker cp $cid:/home/lg/working_dir/out/Default/obj/net/kiwi build-output/ 2>/dev/null || true
@@ -91,9 +64,6 @@ jobs:
             docker rm -f $cid
           fi
 
-  # -----------------------------------------------------------
-  # Quick syntax verification with clang++
-  # -----------------------------------------------------------
   verify_compilation:
     needs: [verify_patches]
     runs-on: ubuntu-latest
@@ -101,30 +71,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: patches
-
       - name: Sparse checkout Chromium
         run: |
-          git clone --depth=1 --filter=blob:none --no-checkout \
-            https://github.com/chromium/chromium.git chromium-src
+          git clone --depth=1 --filter=blob:none --no-checkout https://github.com/chromium/chromium.git chromium-src
           cd chromium-src
-          git sparse-checkout set \
-            .gn BUILD.gn net/ base/ build/ build_overrides/ \
-            crypto/ url/ testing/ third_party/boringssl/ \
-            third_party/zlib/ third_party/abseil-cpp/ \
-            third_party/perfetto/ third_party/googletest/ \
-            third_party/partition_alloc/
+          git sparse-checkout set .gn BUILD.gn net/ base/ build/ build_overrides/ crypto/ url/ testing/ third_party/boringssl/ third_party/zlib/ third_party/abseil-cpp/ third_party/perfetto/ third_party/googletest/ third_party/partition_alloc/
           git checkout
-
       - name: Copy Kiwi files
         run: |
           mkdir -p chromium-src/net/kiwi
           cp patches/ech_kyber_integration/*.cc chromium-src/net/kiwi/
           cp patches/ech_kyber_integration/*.h chromium-src/net/kiwi/
-          cp patches/ech_kyber_integration/BUILD.gn chromium-src/net/kiwi/
-
       - name: Install system C++ headers
         run: sudo apt-get install -y --no-install-recommends g++
-
       - name: Compile with g++
         run: |
           cd chromium-src
@@ -137,20 +96,16 @@ jobs:
           INCS="$INCS -Ithird_party/partition_alloc"
           DEFS="-DNET_IMPLEMENTATION=1 -DBORINGSSL_IMPLEMENTATION=1"
           DEFS="$DEFS -DOPENSSL_IS_BORINGSSL=1"
-
           PASS=0; FAIL=0
           for f in net/kiwi/*.cc; do
             base=$(basename $f .cc)
             [ "$base" = "mojo_ipc_integration" ] && echo "SKIP $base.cc" && continue
             echo -n "$base.cc ... "
-            LOG=/tmp/$base.err
-            if g++ -std=c++20 -fPIC -O2 -c "$f" $INCS $DEFS \
-              -include /usr/include/features.h -D_GNU_SOURCE \
-              -o out/verify/$base.o 2>$LOG; then
-              echo "OK"; PASS=$((PASS+1))
+            if g++ -std=c++20 -fPIC -O2 -c "$f" $INCS $DEFS -include /usr/include/features.h -D_GNU_SOURCE -o out/verify/$base.o 2>/tmp/err.txt; then
+              echo OK; PASS=$((PASS+1))
             else
-              echo "FAIL"; head -4 $LOG; FAIL=$((FAIL+1))
+              echo FAIL; head -5 /tmp/err.txt; FAIL=$((FAIL+1))
             fi
           done
-          echo "Result: $PASS passed, $FAIL failed"
+          echo "$PASS passed, $FAIL failed"
           exit $FAIL
