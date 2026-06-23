@@ -86,14 +86,32 @@ jobs:
           '
       - name: GN Gen
         run: |
+          # Find gn and ninja first
           docker exec kb bash -c '
-            cd /home/lg/kiwi-src
-            gn gen out/android --args="target_os=\"android\" target_cpu=\"arm64\" is_debug=false symbol_level=0 is_official_build=true enable_remoting=false enable_nacl=false proprietary_codecs=false ffmpeg_branding=\"Chromium\" enable_quic=true enable_http3=true enable_ech=true enable_quic_connection_migration=true enable_quic_0rtt=true"
+            echo "=== Find gn ==="
+            find / -name "gn" -type f 2>/dev/null | head -5
+            echo "=== Find ninja ==="
+            find / -name "ninja" -type f 2>/dev/null | head -5
+            echo "=== PATH ==="
+            echo $PATH
+            ls /home/lg/buildtools/ 2>/dev/null || echo "no /home/lg/buildtools"
+            ls /home/lg/.local/bin/ 2>/dev/null || echo "no ~/.local/bin"
           '
+          # If gn not found, install it
+          docker exec kb bash -c 'if ! which gn >/dev/null 2>&1; then
+            echo "Installing gn..."
+            apt-get update -qq && apt-get install -y -qq ninja-build 2>/dev/null
+            cd /tmp && curl -sL https://chrome-infra-packages.appspot.com/dl/gn/gn/linux-amd64/+/latest -o gn.zip && unzip -o gn.zip && chmod +x gn && mv gn /usr/local/bin/
+          fi'
       - name: Ninja build
         timeout-minutes: 180
         run: |
-          docker exec kb bash -c "cd /home/lg/kiwi-src && ninja -C out/android chrome_public_apk 2>&1 | tail -50"
+          docker exec kb bash -c '
+            cd /home/lg/kiwi-src
+            gn gen out/android --args="target_os=\"android\" target_cpu=\"arm64\" is_debug=false symbol_level=0 is_official_build=true enable_remoting=false enable_nacl=false proprietary_codecs=false ffmpeg_branding=\"Chromium\" enable_quic=true enable_http3=true enable_ech=true enable_quic_connection_migration=true enable_quic_0rtt=true" 2>&1 | tail -20
+            which gn ninja
+            ninja -C out/android chrome_public_apk 2>&1 | tail -50
+          '
       - name: Extract APK
         if: always()
         run: |
