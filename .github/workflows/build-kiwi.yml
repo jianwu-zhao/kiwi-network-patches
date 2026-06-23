@@ -18,135 +18,70 @@ jobs:
           sudo rm -rf /opt/hostedtoolcache /usr/share/dotnet /usr/local/lib/android /usr/local/share/boost
           df -h /
 
-      - name: Pull Chromium Docker image
-        run: |
-          # Pull the image layer by layer with progress
-          docker pull uazo/chromium:143.0.7499.193
-          echo "PULL DONE"
+      - name: Pull image
+        run: docker pull uazo/chromium:143.0.7499.193
 
-      - name: Check image contents (10min debug saver)
-        run: |
-          docker run --rm uazo/chromium:143.0.7499.193 bash -c '
-            echo "PATH=$PATH"
-            echo "---"
-            which gn ninja clang++ g++ 2>&1
-            echo "---"
-            find / -maxdepth 4 -name "gn" -o -name "ninja" -o -name "clang++" 2>/dev/null
-            echo "---"
-            ls /home/lg/ 2>&1
-          '
-
-      - name: Full build
+      - name: Full Build
         timeout-minutes: 300
         run: |
-          # Copy patches and build script into container
-          docker run -d --name kb uazo/chromium:143.0.7499.193 tail -f /dev/null
+          # Start container
+          docker run -d --name kb -v "$PWD/patches:/tmp/p:ro" uazo/chromium:143.0.7499.193 tail -f /dev/null
 
-          # Check directory structure
-          docker exec kb bash -c '
-            echo "=== Home ==="
-            ls /home/lg/
-            echo "=== kiwi-src? ==="
-            ls /home/lg/kiwi-src/ 2>/dev/null | head -3 || echo "NOT FOUND"
-            echo "=== working_dir? ==="
-            ls /home/lg/working_dir/ 2>/dev/null | head -3 || echo "NOT FOUND"
-            echo "=== tools PATH ==="
-            echo $PATH
-            which g++ 2>/dev/null
-          '
+          # ALL build logic in one script
+          docker exec -u root kb bash -c '
+            set -x
 
-          # Apply patches
-          docker cp "$PWD/patches/." kb:/tmp/patches/
-          docker exec kb bash -c '
-            # Find source dir
-            for dir in /home/lg/kiwi-src /home/lg/working_dir /home/lg/chromium/src; do
-              if [ -d "$dir" ] && [ -f "$dir/net/BUILD.gn" ]; then
-                SRC=$dir
-                echo "Source found: $SRC"
-                break
-              fi
-            done
-            if [ -z "$SRC" ]; then
-              echo "No Chromium source found!"
-              find /home/lg -maxdepth 2 -type d | head -20
-              exit 1
-            fi
+            SRC=/home/lg/working_dir/chromium/src
+            DT=/home/lg/working_dir/depot_tools
 
+            echo "=== 1. Check source ==="
+            ls "$SRC/net/" | head -3
+            ls "$DT/gn" "$DT/ninja"
+
+            echo "=== 2. Install clang (required for Chromium build) ==="
+            apt-get update -qq 2>/dev/null
+            apt-get install -y -qq clang-10 lld-10 2>/dev/null || apt-get install -y -qq clang lld 2>/dev/null || echo "apt failed"
+            which clang++ 2>/dev/null && clang++ --version || echo "NO clang++"
+
+            echo "=== 3. Apply patches ==="
             cd "$SRC"
-
-            # Apply .patch files
-            for pf in /tmp/patches/*.patch; do
+            for pf in /tmp/p/*.patch; do
               [ -f "$pf" ] || continue
-              patch -p1 --force < "$pf" 2>&1 | tail -2 && echo "PATCH OK: $(basename $pf)" || echo "PATCH SKIP: $(basename $pf)"
+              patch -p1 --force < "$pf" 2>&1 | tail -2
             done
-
-            # Copy kiwi files
             mkdir -p net/kiwi/unittests
-            cp /tmp/patches/ech_kyber_integration/*.cc net/kiwi/ 2>/dev/null || true
-            cp /tmp/patches/ech_kyber_integration/*.h net/kiwi/ 2>/dev/null || true
-            cp /tmp/patches/ech_kyber_integration/BUILD.gn net/kiwi/ 2>/dev/null || true
-
+            cp /tmp/p/ech_kyber_integration/*.cc net/kiwi/ 2>/dev/null || true
+            cp /tmp/p/ech_kyber_integration/*.h net/kiwi/ 2>/dev/null || true
+            cp /tmp/p/ech_kyber_integration/BUILD.gn net/kiwi/ 2>/dev/null || true
             # sed integrations
-            for f in net/socket/ssl_client_socket.cc net/dns/host_resolver_manager.cc net/url_request/url_request_http_job.cc chrome/browser/net/system_network_context_manager.cc; do
-              [ -f "$f" ] || continue
-              echo "Patching $f"
-            done
-            echo "PATCHES APPLIED"
-          '
+            grep -q "kiwi_ssl_config" net/socket/ssl_client_socket.cc 2>/dev/null || sed -i "/#include \"net\/ssl\/ssl_config\"/a #include \"net\/kiwi\/kiwi_ssl_config.h\"" net/socket/ssl_client_socket.cc 2>/dev/null || true
+            grep -q "ConfigureKiwiSSL" net/socket/ssl_client_socket.cc 2>/dev/null || sed -i "/SSL_set_connect_state(ssl_.get())/a \/\/ Kiwi SSL\n  ConfigureKiwiSSL(ssl_.get(), ssl_ctx_.get(), ssl_config_);" net/socket/ssl_client_socket.cc 2>/dev/null || true
+            grep -q "kiwi_dns_handler" net/dns/host_resolver_manager.cc 2>/dev/null || sed -i "/#include \"net\/dns\/host_resolver_manager.h\"/a #include \"net\/kiwi\/kiwi_dns_handler.h\"" net/dns/host_resolver_manager.cc 2>/dev/null || true
+            grep -q "kiwi_url_request" net/url_request/url_request_http_job.cc 2>/dev/null || sed -i "/#include \"net\/url_request\/url_request_http_job.h\"/a #include \"net\/kiwi\/kiwi_url_request.h\"" net/url_request/url_request_http_job.cc 2>/dev/null || true
+            grep -q "kiwi_system_net" chrome/browser/net/system_network_context_manager.cc 2>/dev/null || sed -i "/#include \"chrome\/browser\/net\/system_network_context_manager.h\"/a #include \"net\/kiwi\/kiwi_system_net.h\"" chrome/browser/net/system_network_context_manager.cc 2>/dev/null || true
+            sed -i "s/base::FEATURE_DISABLED_BY_DEFAULT};$/base::FEATURE_ENABLED_BY_DEFAULT};/g" net/base/features.cc 2>/dev/null || true
+            echo "Patches applied"
 
-          # Find gn and use it
-          docker exec kb bash -c '
-            SRC=""
-            for dir in /home/lg/kiwi-src /home/lg/working_dir /home/lg/chromium/src; do
-              if [ -d "$dir" ] && [ -f "$dir/net/BUILD.gn" ]; then
-                SRC=$dir
-                break
-              fi
-            done
-            [ -z "$SRC" ] && echo "No source!" && exit 1
+            echo "=== 4. gn gen ==="
+            export PATH="$DT:$PATH"
+            gn gen out/android --args="target_os=\"android\" target_cpu=\"arm64\" is_debug=false symbol_level=0 is_official_build=true enable_remoting=false enable_nacl=false proprietary_codecs=false ffmpeg_branding=\"Chromium\" enable_quic=true enable_http3=true enable_ech=true enable_quic_connection_migration=true enable_quic_0rtt=true" 2>&1
+            echo "gn gen exit: $?"
 
-            cd "$SRC"
+            echo "=== 5. ninja build ==="
+            ninja -C out/android chrome_public_apk 2>&1
+            echo "ninja exit: $?"
 
-            # Find gn
-            GN=$(find / -name "gn" -type f 2>/dev/null | head -1)
-            if [ -z "$GN" ]; then
-              echo "gn not found, installing..."
-              apt-get update -qq && apt-get install -y -qq curl unzip 2>/dev/null
-              cd /tmp
-              curl -sL "https://chrome-infra-packages.appspot.com/dl/gn/gn/linux-amd64/+/latest" -o gn.zip
-              unzip -o gn.zip
-              chmod +x gn
-              GN=/tmp/gn
-            fi
-            echo "Using gn: $GN ($($GN --version 2>/dev/null))"
-
-            # Find ninja
-            NINJA=$(find / -name "ninja" -type f 2>/dev/null | head -1)
-            if [ -z "$NINJA" ]; then
-              echo "ninja not found, installing..."
-              apt-get install -y -qq ninja-build 2>/dev/null
-              NINJA=$(which ninja 2>/dev/null || echo "/usr/bin/ninja")
-            fi
-            echo "Using ninja: $NINJA ($($NINJA --version 2>/dev/null))"
-
-            # gn gen
-            $GN gen out/android --args="target_os=\"android\" target_cpu=\"arm64\" is_debug=false symbol_level=0 is_official_build=true enable_remoting=false enable_nacl=false proprietary_codecs=false ffmpeg_branding=\"Chromium\" enable_quic=true enable_http3=true enable_ech=true enable_quic_connection_migration=true enable_quic_0rtt=true"
-            echo "GN GEN DONE"
-
-            # ninja
-            $NINJA -C out/android chrome_public_apk
-            echo "NINJA DONE"
-
-            ls -la out/android/apks/ 2>/dev/null
-          '
+            echo "=== 6. Find APK ==="
+            find out/android -name "*.apk" 2>/dev/null | head -5
+            ls -la out/android/apks/ 2>/dev/null || true
+          ' 2>&1 | tee /tmp/build_log.txt
 
           # Extract APK
           mkdir -p apk-output
-          docker cp kb:/home/lg/kiwi-src/out/android/apks/ apk-output/ 2>/dev/null || true
-          docker cp kb:/home/lg/working_dir/out/android/apks/ apk-output/ 2>/dev/null || true
-          docker cp kb:/home/lg/chromium/src/out/android/apks/ apk-output/ 2>/dev/null || true
-          find apk-output/ -name "*.apk" -exec ls -lh {} \; || true
-          docker rm -f kb
+          docker cp kb:/home/lg/working_dir/chromium/src/out/android/apks/ apk-output/ 2>/dev/null || true
+          docker cp kb:/home/lg/working_dir/chromium/src/out/android/Release/ apk-output/ 2>/dev/null || true
+          find apk-output/ -name "*.apk" -exec ls -lh {} \; || echo "no apk found"
+          docker rm -f kb || true
 
       - name: Upload APK
         if: always()

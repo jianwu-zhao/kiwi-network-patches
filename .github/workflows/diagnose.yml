@@ -2,73 +2,26 @@ name: Docker Image Diagnostics
 
 on:
   workflow_dispatch:
-  push:
-    branches: [kiwi]
 
 jobs:
   diagnose:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Pull and Diagnose
         run: |
           docker pull uazo/chromium:143.0.7499.193
-
-          # Run diagnostics and save to file (don't let failures stop us)
           docker run --rm uazo/chromium:143.0.7499.193 bash -c '
-            echo "===== WHOAMI ====="
-            whoami
-            echo ""
-            echo "===== PATH ====="
-            echo $PATH
-            echo ""
-            echo "===== HOME ====="
-            ls -la /home/lg/ 2>&1
-            echo ""
-            echo "===== kiwi-src ====="
-            ls /home/lg/kiwi-src/ 2>&1 | head -20
-            echo ""
-            echo "===== working_dir ====="
-            ls /home/lg/working_dir/ 2>&1 | head -20
-            echo ""
-            echo "===== chromium ====="
-            ls /home/lg/chromium/ 2>&1 | head -20
-            echo ""
-            echo "===== Find gn ====="
-            find / -name "gn" -type f 2>/dev/null
-            echo ""
-            echo "===== Find ninja ====="
-            find / -name "ninja" -type f 2>/dev/null
-            echo ""
-            echo "===== Find clang++ ====="
-            find / -name "clang++" -type f 2>/dev/null | head -5
-            echo ""
-            echo "===== Find g++ ====="
-            find / -name "g++" -type f 2>/dev/null | head -5
-            echo ""
-            echo "===== llvm dirs ====="
-            ls /usr/lib/llvm*/bin/ 2>/dev/null | head -10
-            ls /home/lg/chromium/src/third_party/llvm-build/Release+Asserts/bin/ 2>/dev/null | head -10
-            echo ""
-            echo "===== buildtools ====="
-            ls /home/lg/chromium/src/buildtools/linux64/ 2>/dev/null | head -10
-            echo ""
-            echo "===== which tools ====="
+            echo "PATH=$PATH"
+            echo "---"
             which gn ninja clang++ g++ 2>&1
-            echo ""
-            echo "===== apt list ====="
-            dpkg -l 2>/dev/null | grep -iE "clang|gn|ninja|llvm" | head -20
-            echo ""
-            echo "===== env ====="
-            env | sort
-          ' 2>&1 | tee /tmp/diag_output.txt || true
-
-          echo "=== Diagnostic output saved ==="
-          wc -l /tmp/diag_output.txt
-
-      - name: Upload diagnostic output
+            echo "---"
+            find / -maxdepth 4 -name "gn" -o -name "ninja" -o -name "clang++" 2>/dev/null
+            echo "---"
+            ls /home/lg/ 2>&1
+          ' 2>&1 | tee /tmp/diag.txt
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: diag-output
-          path: /tmp/diag_output.txt
+          name: diag
+          path: /tmp/diag.txt
