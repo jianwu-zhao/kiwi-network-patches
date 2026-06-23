@@ -8,22 +8,19 @@ apt-get update -qq
 apt-get install -y -qq clang lld 2>/dev/null || true
 which clang++ && clang++ --version
 
-echo "=== Fix Python 3.10+ syntax in Chromium source ==="
+echo "=== Fix Python syntax for Python 3.8 compatibility ==="
 cd "$SRC"
-# Fix1: list[type] -> List[type]
-grep -rl 'list\[' --include='*.py' tools/ third_party/perfetto/ 2>/dev/null | while read f; do
-  sed -i 's/def __init__(self, \([^)]*\): list\[/\1: typing.List[/g' "$f" 2>/dev/null || true
+# list[type] -> typing.List[type]
+for f in $(grep -rls 'list\[' --include='*.py' tools/ third_party/perfetto/ 2>/dev/null); do
+  sed -i 's/\blist\[/typing.List[/g' "$f"
+  grep -q '^import typing' "$f" || sed -i '1s/^/import typing\n/' "$f"
 done
-# Add typing import where needed
-grep -rl 'typing\.List' --include='*.py' tools/ third_party/perfetto/ 2>/dev/null | while read f; do
-  grep -q '^import typing' "$f" 2>/dev/null || sed -i '1s/^/import typing\n/' "$f" 2>/dev/null || true
+# type | type -> typing.Union[type, type] (Python 3.10+ union syntax)
+for f in $(grep -rls 'from __future__' --include='*.py' tools/ 2>/dev/null); do
+  sed -i 's/\([A-Za-z0-9_]*\) | \([A-Za-z0-9_]*\)/typing.Union[\1, \2]/g' "$f"
+  grep -q '^import typing' "$f" || sed -i '1s/^/import typing\n/' "$f"
 done
-# Fix2: type | type -> typing.Union[type, type]
-grep -rl '[A-Za-z]* | [A-Za-z]*' --include='*.py' tools/ 2>/dev/null | while read f; do
-  # Only fix lines that have Python type annotations (not string literals)
-  sed -i 's/ = \([A-Za-z]*\) | \([A-Za-z]*\)/ = typing.Union[\1, \2]/g' "$f" 2>/dev/null || true
-done
-echo "Python fixes applied"
+echo "Python fixes done"
 
 echo "=== Download Chromium clang toolchain ==="
 cd "$SRC"
