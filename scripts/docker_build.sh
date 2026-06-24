@@ -1,38 +1,30 @@
 #!/bin/bash
+# Inside Docker container as root
 set -e
 
 SRC=/home/lg/working_dir/chromium/src
 
-echo "=== Install clang ==="
+echo "=== Install clang & Python 3.10 ==="
 apt-get update -qq
 apt-get install -y -qq clang lld 2>/dev/null || true
-which clang++ && clang++ --version
 
-echo "=== Fix Python syntax for Python 3.8 compatibility ==="
-cd "$SRC"
-
-# Fix1: list[type] -> typing.List[type]
-for f in $(grep -rls 'list\[' --include='*.py' tools/ third_party/perfetto/ 2>/dev/null); do
-  sed -i 's/\blist\[/typing.List[/g' "$f"
-  if grep -q '^from __future__' "$f"; then
-    grep -q '^import typing' "$f" || sed -i '/^from __future__/a import typing' "$f"
-  else
-    grep -q '^import typing' "$f" || sed -i '1s/^/import typing\n/' "$f"
-  fi
-done
-
-# Fix2: type | type -> typing.Union[type, type] (Python 3.10+)
-for f in $(grep -rls ' | ' --include='*.py' tools/ third_party/perfetto/ 2>/dev/null); do
-  if grep -qE '(minidom|[A-Z][a-z]+) \| ([A-Z][a-z]+)' "$f" 2>/dev/null; then
-    sed -i -E 's/([a-zA-Z_]+) \| ([a-zA-Z_]+)/typing.Union[\1, \2]/g' "$f"
-    if grep -q '^from __future__' "$f"; then
-      grep -q '^import typing' "$f" || sed -i '/^from __future__/a import typing' "$f"
-    else
-      grep -q '^import typing' "$f" || sed -i '1s/^/import typing\n/' "$f"
-    fi
-  fi
-done
-echo "Python fixes done"
+# Download and install Python 3.10 static build
+cd /tmp
+curl -sL "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.10.20%2B20260623-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz" -o py.tar.gz
+tar xzf py.tar.gz
+# Find the python3 binary
+PY=$(find /tmp -name "python3" -type f 2>/dev/null | head -1)
+if [ -n "$PY" ]; then
+  echo "Found Python at: $PY"
+  $PY --version
+  ln -sf "$PY" /usr/local/bin/python3
+  # Also set up pip if available
+  PIP=$(find /tmp -name "pip3" -type f 2>/dev/null | head -1)
+  [ -n "$PIP" ] && ln -sf "$PIP" /usr/local/bin/pip3 || true
+else
+  echo "Python 3.10 binary not found, using system python"
+fi
+python3 --version
 
 echo "=== Download Chromium clang toolchain ==="
 cd "$SRC"
