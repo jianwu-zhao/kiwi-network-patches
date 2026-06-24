@@ -3,38 +3,22 @@ set -e
 
 SRC=/home/lg/working_dir/chromium/src
 
-echo "=== Install clang + Python 3.10 from PPA ==="
+echo "=== Install clang + Python 3.10 ==="
 apt-get update -qq
-apt-get install -y -qq software-properties-common 2>/dev/null || true
-add-apt-repository -y ppa:deadsnakes/ppa 2>/dev/null || true
-apt-get update -qq 2>/dev/null || true
-apt-get install -y -qq python3.10 python3.10-distutils 2>/dev/null || true
-if command -v python3.10 &>/dev/null; then
-  echo "Python 3.10 installed: $(python3.10 --version)"
-  # Prefer python3.10 for all python3 calls
-  update-alternatives --install /usr/local/bin/python3 python3 /usr/bin/python3.10 100 2>/dev/null || true
-  ln -sf /usr/bin/python3.10 /usr/local/bin/python3 2>/dev/null || true
-fi
-python3 --version
-
-# Fallback: download static Python 3.10
-if ! python3 --version 2>&1 | grep -q "3.1[0-9]"; then
-  echo "PPA failed, download static Python 3.10..."
-  cd /tmp
-  curl -sL "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.10.20%2B20260623-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz" -o py.tar.gz
-  tar xzf py.tar.gz
-  PY=$(find /tmp -name "python3" -type f 2>/dev/null | head -1)
-  if [ -n "$PY" ]; then
-    echo "Found Python at: $PY"
-    $PY --version
-    ln -sf "$PY" /usr/local/bin/python3
-  fi
-  python3 --version
-fi
-
-# Also install clang + lld
 apt-get install -y -qq clang lld 2>/dev/null || true
 which clang++ && clang++ --version
+
+# Download static Python 3.10 - correct extraction path
+echo "Downloading static Python 3.10..."
+cd /tmp
+curl -sL "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.10.20%2B20260623-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz" -o py.tar.gz
+tar xzf py.tar.gz -C /usr/local/
+# The archive has python/bin/python3.10 inside, so it extracts to /usr/local/python/
+ls /usr/local/python/bin/python3.10 2>/dev/null && echo "Found python3.10" || echo "Not at expected path"
+# Symlink into PATH
+ln -sf /usr/local/python/bin/python3.10 /usr/local/bin/python3
+ln -sf /usr/local/python/bin/python3.10 /usr/local/bin/python3.10
+python3 --version
 
 echo "=== Download Chromium clang toolchain ==="
 cd "$SRC"
