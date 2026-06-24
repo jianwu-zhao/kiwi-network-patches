@@ -37,3 +37,12 @@ jobs:
           name: kiwi-apk
           path: apk-output/
           if-no-files-found: ignore
+
+      - name: Upload net build output
+        if: always()
+        run: |
+          mkdir -p net-output
+          docker cp kb:/home/lg/working_dir/chromium/src/out/android/obj/net/net/ net-output/ 2>/dev/null || true
+          docker cp kb:/home/lg/working_dir/chromium/src/out/android/obj/net/kiwi/ net-output/ 2>/dev/null || true
+          ls -la net-output/ 2>/dev/null | head -10
+          docker rm -f kb || true
