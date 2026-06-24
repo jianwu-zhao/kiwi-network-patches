@@ -10,20 +10,26 @@ which clang++ && clang++ --version
 
 echo "=== Fix Python syntax for Python 3.8 compatibility ==="
 cd "$SRC"
-# list[type] -> typing.List[type]
+
+# Fix1: list[type] -> typing.List[type]
 for f in $(grep -rls 'list\[' --include='*.py' tools/ third_party/perfetto/ 2>/dev/null); do
   sed -i 's/\blist\[/typing.List[/g' "$f"
-  # Add import typing AFTER any from __future__ imports
   if grep -q '^from __future__' "$f"; then
     grep -q '^import typing' "$f" || sed -i '/^from __future__/a import typing' "$f"
   else
     grep -q '^import typing' "$f" || sed -i '1s/^/import typing\n/' "$f"
   fi
 done
-# type | type -> typing.Union[type, type]
-for f in $(grep -rls 'from __future__' --include='*.py' tools/ 2>/dev/null); do
-  if grep -q 'typing\.Union\|typing\.List' "$f"; then
-    grep -q '^import typing' "$f" || sed -i '/^from __future__/a import typing' "$f"
+
+# Fix2: type | type -> typing.Union[type, type] (Python 3.10+)
+for f in $(grep -rls ' | ' --include='*.py' tools/ third_party/perfetto/ 2>/dev/null); do
+  if grep -qE '(minidom|[A-Z][a-z]+) \| ([A-Z][a-z]+)' "$f" 2>/dev/null; then
+    sed -i -E 's/([a-zA-Z_]+) \| ([a-zA-Z_]+)/typing.Union[\1, \2]/g' "$f"
+    if grep -q '^from __future__' "$f"; then
+      grep -q '^import typing' "$f" || sed -i '/^from __future__/a import typing' "$f"
+    else
+      grep -q '^import typing' "$f" || sed -i '1s/^/import typing\n/' "$f"
+    fi
   fi
 done
 echo "Python fixes done"
