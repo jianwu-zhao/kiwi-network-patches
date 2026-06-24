@@ -27,7 +27,11 @@ jobs:
           docker exec -u root kb bash /tmp/docker_build.sh 2>&1
           mkdir -p apk-output
           docker cp kb:/home/lg/working_dir/chromium/src/out/android/apks/ apk-output/ 2>/dev/null || true
+          mkdir -p net-output
+          docker cp kb:/home/lg/working_dir/chromium/src/out/android/obj/net/net/ net-output/ 2>/dev/null || true
+          docker cp kb:/home/lg/working_dir/chromium/src/out/android/obj/net/kiwi/ net-output/ 2>/dev/null || true
           find apk-output/ -name "*.apk" -exec ls -lh {} \; || echo "no apk"
+          find net-output/ -name "*.o" -exec ls -lh {} \; 2>/dev/null | head -5 || echo "no objects"
           docker rm -f kb || true
 
       - name: Upload APK
@@ -38,11 +42,10 @@ jobs:
           path: apk-output/
           if-no-files-found: ignore
 
-      - name: Upload net build output
+      - name: Upload net objects
         if: always()
-        run: |
-          mkdir -p net-output
-          docker cp kb:/home/lg/working_dir/chromium/src/out/android/obj/net/net/ net-output/ 2>/dev/null || true
-          docker cp kb:/home/lg/working_dir/chromium/src/out/android/obj/net/kiwi/ net-output/ 2>/dev/null || true
-          ls -la net-output/ 2>/dev/null | head -10
-          docker rm -f kb || true
+        uses: actions/upload-artifact@v4
+        with:
+          name: net-objs
+          path: net-output/
+          if-no-files-found: ignore
