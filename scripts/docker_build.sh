@@ -2,7 +2,6 @@
 set -e
 
 SRC=/home/lg/working_dir/chromium/src
-OUT=/home/lg/working_dir/chromium/src/out/android
 
 echo "=== Setup ==="
 apt-get update -qq
@@ -48,16 +47,11 @@ sed -i "s/base::FEATURE_DISABLED_BY_DEFAULT};$/base::FEATURE_ENABLED_BY_DEFAULT}
 
 echo "=== gn gen ==="
 export PATH=$SRC/buildtools/linux64:$PATH
-gn gen "$OUT" --args='target_os="android" target_cpu="arm64" is_debug=false symbol_level=0 is_official_build=true chrome_pgo_phase=0 enable_remoting=false enable_nacl=false proprietary_codecs=false ffmpeg_branding="Chromium" enable_quic=true enable_http3=true enable_ech=true enable_quic_connection_migration=true enable_quic_0rtt=true'
+gn gen out/android --args='target_os="android" target_cpu="arm64" is_debug=false symbol_level=0 is_official_build=false chrome_pgo_phase=0 enable_remoting=false enable_nacl=false proprietary_codecs=false ffmpeg_branding="Chromium" enable_quic=true enable_http3=true enable_ech=true enable_quic_connection_migration=true enable_quic_0rtt=true optimize_for_size=true use_thin_lto=false'
 
-echo "=== Build: net target only ==="
-time $SRC/third_party/ninja/ninja -C "$OUT" net 2>&1
+echo "=== Build chrome_public_apk ==="
+$SRC/third_party/ninja/ninja -C out/android chrome_public_apk 2>&1
 
-echo "=== Build: net/kiwi related targets ==="
-ls -la "$OUT/obj/net/net/" 2>/dev/null | head -10
-
-echo "=== Verify kiwi objects exist ==="
-find "$OUT" -name "*.o" -path "*kiwi*" 2>/dev/null
-find "$OUT" -name "kiwi*" 2>/dev/null | head -10
-
-echo "=== net target build complete ==="
+echo "=== Find APK ==="
+find out/android -name "*.apk" 2>/dev/null | head -5
+ls -lh out/android/apks/ 2>/dev/null || true
