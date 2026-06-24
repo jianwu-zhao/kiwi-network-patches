@@ -19,7 +19,7 @@ jobs:
           df -h /
 
       - name: Build
-        timeout-minutes: 300
+        timeout-minutes: 480
         run: |
           docker pull uazo/chromium:143.0.7499.193
           docker run -d --name kb -v "$PWD/patches:/tmp/p:ro" uazo/chromium:143.0.7499.193 tail -f /dev/null
