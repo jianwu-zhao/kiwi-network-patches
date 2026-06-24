@@ -3,10 +3,12 @@ set -e
 
 SRC=/home/lg/working_dir/chromium/src
 
-echo "=== Install clang + Python 3.10 ==="
+echo "=== Install clang + fix git safe.directory ==="
 apt-get update -qq
 apt-get install -y -qq clang lld 2>/dev/null || true
 which clang++ && clang++ --version
+# Fix git safe.directory for Chromium repo
+git config --global --add safe.directory '*' 2>/dev/null || true
 
 # Download static Python 3.10 - correct extraction path
 echo "Downloading static Python 3.10..."
