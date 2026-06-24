@@ -47,7 +47,7 @@ sed -i "s/base::FEATURE_DISABLED_BY_DEFAULT};$/base::FEATURE_ENABLED_BY_DEFAULT}
 
 echo "=== gn gen ==="
 export PATH=$SRC/buildtools/linux64:$PATH
-gn gen out/android --args='target_os="android" target_cpu="arm64" is_debug=false symbol_level=0 is_official_build=false chrome_pgo_phase=0 enable_remoting=false enable_nacl=false proprietary_codecs=false ffmpeg_branding="Chromium" enable_quic=true enable_http3=true enable_ech=true enable_quic_connection_migration=true enable_quic_0rtt=true optimize_for_size=true use_thin_lto=false'
+gn gen out/android --args='target_os="android" target_cpu="arm64" is_debug=false symbol_level=0 is_official_build=false chrome_pgo_phase=0 enable_remoting=false enable_nacl=false proprietary_codecs=false ffmpeg_branding="Chromium" enable_quic=true enable_http3=true enable_ech=true enable_quic_connection_migration=true enable_quic_0rtt=true optimize_for_size=true use_thin_lto=false android_static_analysis="none"'
 
 echo "=== Build chrome_public_apk ==="
 $SRC/third_party/ninja/ninja -C out/android chrome_public_apk 2>&1
