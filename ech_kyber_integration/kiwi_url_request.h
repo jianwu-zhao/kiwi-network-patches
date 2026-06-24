@@ -4,7 +4,7 @@
 
 namespace net {
 class URLRequest;
-class SSLConfig;
+struct SSLConfig;
 void ApplyEchConfigToRequest(URLRequest* request, SSLConfig* ssl_config);
 std::string GetEchConfigForRequest(const URLRequest* request);
 }  // namespace net
